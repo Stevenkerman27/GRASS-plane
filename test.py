@@ -5,7 +5,7 @@ import grassmodel
 from draw3dobb import showGenshape
 
 
-decoder = torch.load('./models/vae_decoder_model.pkl')
+decoder = torch.load('./models/vae_decoder_model.pkl', weights_only=False)
 
 
 for i in range(10):

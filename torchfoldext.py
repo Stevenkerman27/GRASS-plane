@@ -1,5 +1,5 @@
-from pytorch_tools import torchfold
-from pytorch_tools.torchfold import Fold
+import torchfold
+from torchfold import Fold
 import torch
 from torch.autograd import Variable
 

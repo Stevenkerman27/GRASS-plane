@@ -22,7 +22,7 @@ class Sampler(nn.Module):
         mu = self.mlp2mu(encode)
         logvar = self.mlp2var(encode)
         std = logvar.mul(0.5).exp_() # calculate the STDEV
-        eps = Variable(torch.FloatTensor(std.size()).normal_().cuda()) # random normalized noise
+        eps = torch.randn_like(std) # random normalized noise
         KLD_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(logvar)
         return torch.cat([eps.mul(std).add_(mu), KLD_element], 1)
 
@@ -97,7 +97,7 @@ def encode_structure_fold(fold, tree):
 
     def encode_node(node):
         if node.is_leaf():
-            return fold.add('boxEncoder', node.box)
+            return fold.add('boxEncoder', node.box) #fold.add只录制，不执行
         elif node.is_adj():
             left = encode_node(node.left)
             right = encode_node(node.right)
@@ -107,7 +107,7 @@ def encode_structure_fold(fold, tree):
             sym = node.sym
             return fold.add('symEncoder', feature, sym)
 
-    encoding = encode_node(tree.root)
+    encoding = encode_node(tree.root) #递归的合并根节点
     return fold.add('sampleEncoder', encoding)
 
 #########################################################################################
@@ -218,13 +218,13 @@ class GRASSDecoder(nn.Module):
         return self.node_classifier(feature)
 
     def boxLossEstimator(self, box_feature, gt_box_feature):
-        return torch.cat([self.mseLoss(b, gt).mul(0.4) for b, gt in zip(box_feature, gt_box_feature)], 0)
+        return torch.stack([self.mseLoss(b, gt).mul(0.4) for b, gt in zip(box_feature, gt_box_feature)], 0)
 
     def symLossEstimator(self, sym_param, gt_sym_param):
-        return torch.cat([self.mseLoss(s, gt).mul(0.5) for s, gt in zip(sym_param, gt_sym_param)], 0)
+        return torch.stack([self.mseLoss(s, gt).mul(0.5) for s, gt in zip(sym_param, gt_sym_param)], 0)
 
     def classifyLossEstimator(self, label_vector, gt_label_vector):
-        return torch.cat([self.creLoss(l.unsqueeze(0), gt).mul(0.2) for l, gt in zip(label_vector, gt_label_vector)], 0)
+        return torch.stack([self.creLoss(l.unsqueeze(0), gt.unsqueeze(0)).mul(0.2) for l, gt in zip(label_vector, gt_label_vector)], 0) #交叉熵
 
     def vectorAdder(self, v1, v2):
         return v1.add_(v2)
@@ -281,30 +281,32 @@ def decode_structure(model, root_code):
     """
     decode = model.sampleDecoder(root_code)
     syms = [torch.ones(8).mul(10).cuda()]
+    #初始化工作栈（放入根节点），以及一个空列表用于收集最终生成的所有 3D 包围盒。
     stack = [decode]
     boxes = []
+    #只要栈里还有未处理的节点，就持续循环
     while len(stack) > 0:
-        f = stack.pop()
-        label_prob = model.nodeClassifier(f)
-        _, label = torch.max(label_prob, 1)
+        f = stack.pop() #取出当前需要解析的节点特征向量 f
+        label_prob = model.nodeClassifier(f) #利用分类器网络预测该特征究竟属于哪种节点
+        _, label = torch.max(label_prob, 1) #取概率最高的值
         label = label.data
         if label[0] == 1:  # ADJ
             left, right = model.adjDecoder(f)
             stack.append(left)
             stack.append(right)
-            s = syms.pop()
+            s = syms.pop() # 向下传递对称属性。弹出一个当前的对称状态，再复制两份压回去，确保左右子节点都能继承到相同的对称指令
             syms.append(s)
             syms.append(s)
         if label[0] == 2:  # SYM
             left, s = model.symDecoder(f)
             s = s.squeeze(0)
             stack.append(left)
-            syms.pop()
+            syms.pop() #把旧的对称状态扔掉，将模型刚刚预测出的有效对称参数压入栈。这样它下方的所有叶子节点就能拿到这组参数进行阵列
             syms.append(s.data)
         if label[0] == 0:  # BOX
-            reBox = model.boxDecoder(f)
+            reBox = model.boxDecoder(f) #解码OBB
             reBoxes = [reBox]
-            s = syms.pop()
+            s = syms.pop() #提取当前叶子节点继承到的对称参数
             l1 = abs(s[0] + 1)
             l2 = abs(s[0])
             l3 = abs(s[0] - 1)
@@ -315,7 +317,7 @@ def decode_structure(model, root_code):
                 f1 = torch.cat([sList[1], sList[2], sList[3]])
                 f1 = f1/torch.norm(f1)
                 f2 = torch.cat([sList[4], sList[5], sList[6]])
-                folds = round(1/s[7])
+                folds = round((1/s[7]).item())
                 for i in range(folds-1):
                     rotvector = torch.cat([f1, sList[7].mul(2*3.1415).mul(i+1)])
                     rotm = vrrotvec2mat(rotvector)
@@ -335,8 +337,8 @@ def decode_structure(model, root_code):
                 trans = torch.cat([sList[1], sList[2], sList[3]])
                 trans_end = torch.cat([sList[4], sList[5], sList[6]])
                 center = torch.cat([bList[0], bList[1], bList[2]])
-                trans_length = math.sqrt(torch.sum(trans**2))
-                trans_total = math.sqrt(torch.sum(trans_end.add(-center)**2))
+                trans_length = math.sqrt(torch.sum(trans**2).item())
+                trans_total = math.sqrt(torch.sum(trans_end.add(-center)**2).item())
                 folds = round(trans_total/trans_length)
                 for i in range(folds):
                     center = torch.cat([bList[0], bList[1], bList[2]])

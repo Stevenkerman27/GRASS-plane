@@ -82,7 +82,7 @@ def showGenshapes(genshapes):
 
         fig = plt.figure(i)
         cmap = plt.get_cmap('jet_r')
-        ax = Axes3D(fig)
+        ax = fig.add_subplot(111, projection='3d')
         ax.set_xlim(-0.7, 0.7)
         ax.set_ylim(-0.7, 0.7)
         ax.set_zlim(-0.7, 0.7)
@@ -98,7 +98,7 @@ def showGenshape(genshape):
 
     fig = plt.figure(0)
     cmap = plt.get_cmap('jet_r')
-    ax = Axes3D(fig)
+    ax = fig.add_subplot(111, projection='3d')
     ax.set_xlim(-0.7, 0.7)
     ax.set_ylim(-0.7, 0.7)
     ax.set_zlim(-0.7, 0.7)
