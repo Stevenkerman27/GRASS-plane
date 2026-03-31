@@ -1,7 +1,6 @@
 import math
 import torch
 from torch import nn
-from torch.autograd import Variable
 from time import time
 
 #########################################################################################
@@ -289,7 +288,7 @@ def decode_structure(model, root_code):
         f = stack.pop() #取出当前需要解析的节点特征向量 f
         label_prob = model.nodeClassifier(f) #利用分类器网络预测该特征究竟属于哪种节点
         _, label = torch.max(label_prob, 1) #取概率最高的值
-        label = label.data
+        label = label.detach()
         if label[0] == 1:  # ADJ
             left, right = model.adjDecoder(f)
             stack.append(left)
@@ -302,7 +301,7 @@ def decode_structure(model, root_code):
             s = s.squeeze(0)
             stack.append(left)
             syms.pop() #把旧的对称状态扔掉，将模型刚刚预测出的有效对称参数压入栈。这样它下方的所有叶子节点就能拿到这组参数进行阵列
-            syms.append(s.data)
+            syms.append(s.detach())
         if label[0] == 0:  # BOX
             reBox = model.boxDecoder(f) #解码OBB
             reBoxes = [reBox]
@@ -313,7 +312,7 @@ def decode_structure(model, root_code):
 
             if l1 < 0.15:
                 sList = torch.split(s, 1, 0)
-                bList = torch.split(reBox.data.squeeze(0), 1, 0)
+                bList = torch.split(reBox.detach().squeeze(0), 1, 0)
                 f1 = torch.cat([sList[1], sList[2], sList[3]])
                 f1 = f1/torch.norm(f1)
                 f2 = torch.cat([sList[4], sList[5], sList[6]])
@@ -329,11 +328,11 @@ def decode_structure(model, root_code):
                     newdir1 = rotm.matmul(dir1)
                     newdir2 = rotm.matmul(dir2)
                     newbox = torch.cat([newcenter, dir0, newdir1, newdir2])
-                    reBoxes.append(Variable(newbox.unsqueeze(0)))
+                    reBoxes.append(newbox.unsqueeze(0))
 
             if l2 < 0.15:
                 sList = torch.split(s, 1, 0)
-                bList = torch.split(reBox.data.squeeze(0), 1, 0)
+                bList = torch.split(reBox.detach().squeeze(0), 1, 0)
                 trans = torch.cat([sList[1], sList[2], sList[3]])
                 trans_end = torch.cat([sList[4], sList[5], sList[6]])
                 center = torch.cat([bList[0], bList[1], bList[2]])
@@ -347,11 +346,11 @@ def decode_structure(model, root_code):
                     dir2 = torch.cat([bList[9], bList[10], bList[11]])
                     newcenter = center.add(trans.mul(i+1))
                     newbox = torch.cat([newcenter, dir0, dir1, dir2])
-                    reBoxes.append(Variable(newbox.unsqueeze(0)))
+                    reBoxes.append(newbox.unsqueeze(0))
 
             if l3 < 0.15:
                 sList = torch.split(s, 1, 0)
-                bList = torch.split(reBox.data.squeeze(0), 1, 0)
+                bList = torch.split(reBox.detach().squeeze(0), 1, 0)
                 ref_normal = torch.cat([sList[1], sList[2], sList[3]])
                 ref_normal = ref_normal/torch.norm(ref_normal)
                 ref_point = torch.cat([sList[4], sList[5], sList[6]])
@@ -369,7 +368,7 @@ def decode_structure(model, root_code):
                     ref_normal = -ref_normal
                 dir2 = dir2.add(ref_normal.mul(-2*ref_normal.matmul(dir2)))
                 newbox = torch.cat([newcenter, dir0, dir1, dir2])
-                reBoxes.append(Variable(newbox.unsqueeze(0)))
+                reBoxes.append(newbox.unsqueeze(0))
 
             boxes.extend(reBoxes)
 

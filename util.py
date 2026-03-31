@@ -10,7 +10,7 @@ def get_args():
     parser.add_argument('--max_box_num', type=int, default=30)
     parser.add_argument('--max_sym_num', type=int, default=10)
 
-    parser.add_argument('--epochs', type=int, default=300)
+    parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--batch_size', type=int, default=123)
     parser.add_argument('--show_log_every', type=int, default=3)
     parser.add_argument('--save_log', action='store_true', default=False)

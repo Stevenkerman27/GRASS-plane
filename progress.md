@@ -30,5 +30,9 @@
 
 ### 4.2 技术债清理
 - [done] 修复 PyTorch 版本不兼容导致的 `.data[0]` 与 `Variable` 报错。
+- [done] 全局移除 `torch.autograd.Variable` 的使用，直接使用 `Tensor`。
+- [done] 移除因梯度分离需求滥用 `.data` 属性，统一修改为 `.detach()` 操作，以支持现代计算图。
+- [done] 修复 `test/debug_loss.py` 中标量张量获取，从 `.data[0]` 更新为 `.item()`。
+- [done] 修正 `torchfoldext.py` 中因旧版本 `Variable` 包装而残留的 `volatile=False` 参数和相关逻辑。
 - [done] 修正 `torchfold` 库依赖路径。
 - [done] 优化 `Sampler` 与损失函数的向量化实现。

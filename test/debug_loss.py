@@ -26,8 +26,8 @@ try:
     print('Stack loss:', stack_loss)
     # Check data[0] on scalar
     try:
-        print('Scalar data[0]:', loss.data[0])
+        print('Scalar data[0]:', loss.item())
     except Exception as e:
-        print('Error on scalar.data[0]:', e)
+        print('Error on scalar.item():', e)
 except Exception as e:
     print('Error during cat/loss:', e)

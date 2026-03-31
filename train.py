@@ -4,7 +4,6 @@ from time import gmtime, strftime
 from datetime import datetime
 import torch
 from torch import nn
-from torch.autograd import Variable
 import torch.utils.data
 from torchfoldext import FoldExt
 import util

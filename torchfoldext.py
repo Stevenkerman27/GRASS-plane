@@ -1,7 +1,6 @@
 import torchfold
 from torchfold import Fold
 import torch
-from torch.autograd import Variable
 
 
 class FoldExt(Fold):
@@ -14,9 +13,9 @@ class FoldExt(Fold):
         """Add op to the fold."""
         self.total_nodes += 1
         if not all([isinstance(arg, (
-            Fold.Node, int, torch.Tensor, torch.FloatTensor, torch.LongTensor, Variable)) for arg in args]):
+            Fold.Node, int, torch.Tensor, torch.FloatTensor, torch.LongTensor)) for arg in args]):
             raise ValueError(
-                "All args should be Tensor, Variable, int or Node, got: %s" % str(args))
+                "All args should be Tensor, int or Node, got: %s" % str(args))
         if args not in self.cached_nodes[op]:
             step = max([0] + [arg.step + 1 for arg in args
                               if isinstance(arg, Fold.Node)])
@@ -45,10 +44,7 @@ class FoldExt(Fold):
                 # Below is what this extension changes against the original version:
                 #   We make Fold handle float tensor
                 try:
-                    if (isinstance(arg[0], Variable)):
-                        var = torch.cat(arg, 0)
-                    else:
-                        var = Variable(torch.cat(arg, 0), volatile=self.volatile)
+                    var = torch.cat(arg, 0)
                     if self._cuda:
                         var = var.cuda()
                     res.append(var)
