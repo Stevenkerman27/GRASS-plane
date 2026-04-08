@@ -320,14 +320,14 @@ def decode_structure(model, root_code):
                 for i in range(folds-1):
                     rotvector = torch.cat([f1, sList[7].mul(2*3.1415).mul(i+1)])
                     rotm = vrrotvec2mat(rotvector)
-                    center = torch.cat([bList[0], bList[1], bList[2]])
-                    dir0 = torch.cat([bList[3], bList[4], bList[5]])
-                    dir1 = torch.cat([bList[6], bList[7], bList[8]])
-                    dir2 = torch.cat([bList[9], bList[10], bList[11]])
-                    newcenter = rotm.matmul(center.add(-f2)).add(f2)
-                    newdir1 = rotm.matmul(dir1)
-                    newdir2 = rotm.matmul(dir2)
-                    newbox = torch.cat([newcenter, dir0, newdir1, newdir2])
+                    c1 = torch.cat([bList[0], bList[1], bList[2]])
+                    c2 = torch.cat([bList[3], bList[4], bList[5]])
+                    dims = torch.cat([bList[6], bList[7], bList[8], bList[9]])
+                    
+                    newc1 = rotm.matmul(c1.add(-f2)).add(f2)
+                    newc2 = rotm.matmul(c2.add(-f2)).add(f2)
+                    
+                    newbox = torch.cat([newc1, newc2, dims])
                     reBoxes.append(newbox.unsqueeze(0))
 
             if l2 < 0.15:
@@ -335,17 +335,20 @@ def decode_structure(model, root_code):
                 bList = torch.split(reBox.detach().squeeze(0), 1, 0)
                 trans = torch.cat([sList[1], sList[2], sList[3]])
                 trans_end = torch.cat([sList[4], sList[5], sList[6]])
-                center = torch.cat([bList[0], bList[1], bList[2]])
+                c1 = torch.cat([bList[0], bList[1], bList[2]])
+                c2 = torch.cat([bList[3], bList[4], bList[5]])
+                dims = torch.cat([bList[6], bList[7], bList[8], bList[9]])
+                
                 trans_length = math.sqrt(torch.sum(trans**2).item())
-                trans_total = math.sqrt(torch.sum(trans_end.add(-center)**2).item())
-                folds = round(trans_total/trans_length)
+                # Use c1 as reference point for translational total length
+                trans_total = math.sqrt(torch.sum(trans_end.add(-c1)**2).item())
+                folds = round(trans_total/max(trans_length, 1e-6))
                 for i in range(folds):
-                    center = torch.cat([bList[0], bList[1], bList[2]])
-                    dir0 = torch.cat([bList[3], bList[4], bList[5]])
-                    dir1 = torch.cat([bList[6], bList[7], bList[8]])
-                    dir2 = torch.cat([bList[9], bList[10], bList[11]])
-                    newcenter = center.add(trans.mul(i+1))
-                    newbox = torch.cat([newcenter, dir0, dir1, dir2])
+                    c1 = torch.cat([bList[0], bList[1], bList[2]])
+                    c2 = torch.cat([bList[3], bList[4], bList[5]])
+                    newc1 = c1.add(trans.mul(i+1))
+                    newc2 = c2.add(trans.mul(i+1))
+                    newbox = torch.cat([newc1, newc2, dims])
                     reBoxes.append(newbox.unsqueeze(0))
 
             if l3 < 0.15:
@@ -354,20 +357,21 @@ def decode_structure(model, root_code):
                 ref_normal = torch.cat([sList[1], sList[2], sList[3]])
                 ref_normal = ref_normal/torch.norm(ref_normal)
                 ref_point = torch.cat([sList[4], sList[5], sList[6]])
-                center = torch.cat([bList[0], bList[1], bList[2]])
-                dir0 = torch.cat([bList[3], bList[4], bList[5]])
-                dir1 = torch.cat([bList[6], bList[7], bList[8]])
-                dir2 = torch.cat([bList[9], bList[10], bList[11]])
-                if ref_normal.matmul(ref_point.add(-center)) < 0:
-                    ref_normal = -ref_normal
-                newcenter = ref_normal.mul(2*abs(torch.sum(ref_point.add(-center).mul(ref_normal)))).add(center)
-                if ref_normal.matmul(dir1) < 0:
-                    ref_normal = -ref_normal
-                dir1 = dir1.add(ref_normal.mul(-2*ref_normal.matmul(dir1)))
-                if ref_normal.matmul(dir2) < 0:
-                    ref_normal = -ref_normal
-                dir2 = dir2.add(ref_normal.mul(-2*ref_normal.matmul(dir2)))
-                newbox = torch.cat([newcenter, dir0, dir1, dir2])
+                
+                c1 = torch.cat([bList[0], bList[1], bList[2]])
+                c2 = torch.cat([bList[3], bList[4], bList[5]])
+                dims = torch.cat([bList[6], bList[7], bList[8], bList[9]])
+                
+                # Reflection logic for points c1 and c2
+                v1 = c1.add(-ref_point)
+                dist1 = torch.sum(v1 * ref_normal)
+                newc1 = c1.add(ref_normal.mul(-2 * dist1))
+                
+                v2 = c2.add(-ref_point)
+                dist2 = torch.sum(v2 * ref_normal)
+                newc2 = c2.add(ref_normal.mul(-2 * dist2))
+                
+                newbox = torch.cat([newc1, newc2, dims])
                 reBoxes.append(newbox.unsqueeze(0))
 
             boxes.extend(reBoxes)
