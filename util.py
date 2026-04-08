@@ -3,7 +3,7 @@ from argparse import ArgumentParser
 
 def get_args():
     parser = ArgumentParser(description='grass_pytorch')
-    parser.add_argument('--box_code_size', type=int, default=12)
+    parser.add_argument('--box_code_size', type=int, default=10)
     parser.add_argument('--feature_size', type=int, default=80)
     parser.add_argument('--hidden_size', type=int, default=200)
     parser.add_argument('--symmetry_size', type=int, default=8)
