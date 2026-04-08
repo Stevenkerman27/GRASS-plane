@@ -34,15 +34,17 @@ def draw(ax, p, color):
     else:
         dir_span_norm = dir_span / span_len
         
-    # The 'L' dimension is always parallel to the global XY plane.
-    # Therefore, the chord direction (X-axis equivalent of the box) lies in the horizontal plane 
-    # and is orthogonal to dir_span.
-    # We calculate the chord direction by crossing dir_span_norm with global Z [0, 0, 1]
-    global_z = np.array([0.0, 0.0, 1.0])
+    # The 'L' dimension is always parallel to the global XY plane if the span is horizontal.
+    # However, if the span is primarily vertical (like a vertical stabilizer), 'L' should be 
+    # parallel to the global XZ plane (roughly aligned with X). 
+    # We choose the reference vector based on the dominant axis of the span.
+    if abs(dir_span_norm[2]) > 0.707: # Z is dominant
+        # Use -Y so that crossing with +Z yields +X
+        ref_vec = np.array([0.0, -1.0, 0.0])
+    else:
+        ref_vec = np.array([0.0, 0.0, 1.0])
     
-    # Cross product of span and Z gives a vector in the XY plane.
-    # If the span is purely vertical, this will fail, but for conventional aircraft this is safe.
-    dir_chord = np.cross(dir_span_norm, global_z)
+    dir_chord = np.cross(dir_span_norm, ref_vec)
     chord_len = LA.norm(dir_chord)
     
     if chord_len < 1e-6:
