@@ -144,9 +144,9 @@ def main():
             b_mat[:, i] = box
         padded_boxes.append(b_mat)
         
-        o_mat = np.zeros((1, MAX_OPS), dtype=np.int32)
+        o_mat = np.zeros((MAX_OPS, 1), dtype=np.int32)
         for i, op in enumerate(o):
-            o_mat[0, i] = op
+            o_mat[i, 0] = op
         padded_ops.append(o_mat)
         
         s_mat = np.zeros((8, MAX_SYMS))
@@ -156,7 +156,7 @@ def main():
         
     # Concatenate along axis 1
     final_boxes = np.concatenate(padded_boxes, axis=1) # [10, NUM_SAMPLES * MAX_BOXES]
-    final_ops = np.concatenate(padded_ops, axis=1)     # [1, NUM_SAMPLES * MAX_OPS]
+    final_ops = np.concatenate(padded_ops, axis=1)     # [MAX_OPS, NUM_SAMPLES]
     final_syms = np.concatenate(padded_syms, axis=1)   # [8, NUM_SAMPLES * MAX_SYMS]
     
     savemat('data/box_data.mat', {'boxes': final_boxes})
