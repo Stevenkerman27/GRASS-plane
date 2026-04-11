@@ -3,7 +3,7 @@ from scipy.io import savemat
 import random
 import os
 
-NUM_SAMPLES = 200
+NUM_SAMPLES = 300
 
 # Constants matching Tree.NodeType from grassdata.py
 BOX_OP = 0
@@ -35,11 +35,11 @@ def generate_aircraft():
     wing_pos_x = random.uniform(0.25 * L_fuse, 0.45 * L_fuse)
     wing_span_half = random.uniform(0.4, 0.8) # y distance from root to tip
     wing_root_chord = random.uniform(0.15, 0.3)
-    taper_ratio = random.uniform(0.3, 0.7)
+    taper_ratio = random.uniform(0.3, 0.9)
     wing_tip_chord = wing_root_chord * taper_ratio
     wing_root_thick = random.uniform(0.02, 0.05)
-    wing_tip_thick = wing_root_thick * random.uniform(0.5, 0.9)
-    sweep_dist = random.uniform(0.0, 0.2) # x shift backward at tip
+    wing_tip_thick = wing_root_thick * random.uniform(0.4, 0.9)
+    sweep_dist = random.uniform(0.0, 0.3) # x shift backward at tip
     dihedral_dist = random.uniform(0.0, 0.1) # z shift upward at tip
     
     x1_w, y1_w, z1_w = wing_pos_x, W_fuse / 2.0, 0
@@ -51,7 +51,43 @@ def generate_aircraft():
     boxes.append(wing_box)
     ops.append(BOX_OP)
     
-    # Symmetry for main wings
+    # --- ENGINES ---
+    num_engines = random.choice([1, 2])
+    eng_length = random.uniform(0.15, 0.25)
+    eng_width = random.uniform(0.04, 0.08)
+    eng_height = eng_width
+    eng_z_offset = - (eng_height / 2.0 + wing_root_thick / 2.0 + 0.01)
+    
+    # Engine 1 (Inboard)
+    t1 = random.uniform(0.3, 0.5)
+    y_e1 = y1_w + t1 * wing_span_half
+    x_e1_center = x1_w + t1 * sweep_dist - eng_length * 0.2
+    z_e1 = z1_w + t1 * dihedral_dist + eng_z_offset
+    
+    eng1_box = [x_e1_center - eng_length/2, y_e1, z_e1,
+                x_e1_center + eng_length/2, y_e1, z_e1,
+                eng_width, eng_height, eng_width, eng_height]
+    
+    boxes.append(eng1_box)
+    ops.append(BOX_OP)
+    ops.append(ADJ_OP) # Attach Engine 1 to Wing
+    
+    if num_engines == 2:
+        # Engine 2 (Outboard)
+        t2 = random.uniform(0.6, 0.8)
+        y_e2 = y1_w + t2 * wing_span_half
+        x_e2_center = x1_w + t2 * sweep_dist - eng_length * 0.2
+        z_e2 = z1_w + t2 * dihedral_dist + eng_z_offset
+        
+        eng2_box = [x_e2_center - eng_length/2, y_e2, z_e2,
+                    x_e2_center + eng_length/2, y_e2, z_e2,
+                    eng_width, eng_height, eng_width, eng_height]
+        
+        boxes.append(eng2_box)
+        ops.append(BOX_OP)
+        ops.append(ADJ_OP) # Attach Engine 2 to (Wing+Engine 1)
+    
+    # Symmetry for main wings + engines
     # Reflective symmetry across XZ plane: s = [1 (for reflective), ref_normal_x, ref_normal_y, ref_normal_z, ref_point_x, ref_point_y, ref_point_z, 0]
     # In visualize_dataset.py, l3 = abs(s[0] - 1), so s[0] must be 1 for reflection.
     # Normal is [0, 1, 0] (Y-axis), ref_point is [0, 0, 0]
@@ -67,7 +103,7 @@ def generate_aircraft():
     htail_pos_x = random.uniform(0.85 * L_fuse, 0.95 * L_fuse)
     htail_span_half = random.uniform(0.15, 0.3)
     htail_root_chord = random.uniform(0.08, 0.15)
-    htail_taper = random.uniform(0.4, 0.8)
+    htail_taper = random.uniform(0.3, 0.8)
     htail_tip_chord = htail_root_chord * htail_taper
     htail_thick = random.uniform(0.01, 0.02)
     htail_sweep = random.uniform(0.0, 0.1)
@@ -93,7 +129,7 @@ def generate_aircraft():
     vtail_pos_x = htail_pos_x # Often aligned
     vtail_span = random.uniform(0.15, 0.3) # z distance
     vtail_root_chord = random.uniform(0.1, 0.2)
-    vtail_taper = random.uniform(0.3, 0.6)
+    vtail_taper = random.uniform(0.3, 0.8)
     vtail_tip_chord = vtail_root_chord * vtail_taper
     vtail_thick = random.uniform(0.01, 0.02)
     vtail_sweep = random.uniform(0.05, 0.15)
@@ -144,7 +180,7 @@ def main():
             b_mat[:, i] = box
         padded_boxes.append(b_mat)
         
-        o_mat = np.zeros((MAX_OPS, 1), dtype=np.int32)
+        o_mat = np.full((MAX_OPS, 1), -1, dtype=np.int32)
         for i, op in enumerate(o):
             o_mat[i, 0] = op
         padded_ops.append(o_mat)

@@ -1,3 +1,3 @@
-把当前代码OBB的参数改为包围盒两个相对面的中心坐标和相对面的尺寸，如机身的相对面为机头和机尾，机翼的相对面为翼根和翼梢，这样总共10D，[x1,y1,z1,x2,y2,z2,L1,H1,L2,H2]。另外，机翼和机身的宽度参数L对应线段在三维空间中的投影，永远平行于全局坐标系的水平面，即机翼安装角和机身迎角永远为0.
+扩充当前代码的训练逻辑为自编码器训练和VAE-WGAN-GP训练. 第一阶段训练逻辑不变，第二阶段时把grass decoder作为GAN的生成器使用，把随机n-D code转化为物体，grass encoder作为判别器。"The final code can be compared to the codes of training structures using an additional fully connected layer and a binary softmax layer producing the probability of the structure being real". GAN损失函数为$$L = L_{GAN}(z_p) + \alpha_1 L_{recon} + \alpha_2 L_{KL}$$, 设alpha1=0.01 and alpha2 = 10. 重建损失现有代码已定义;KL散度损失为Sampler类中已实现的KLD_element.
 
-在data文件夹中编写生成数据集代码，生成对象为有一对主翼，一对平尾和一个垂尾的常规布局固定翼飞机，代码中通过指定主翼，尾翼的翼展，跟梢比，厚度比，平均厚度，平均翼弦，上反角和后掠角定义机翼的OBB参数。机身为起点为(0,0,0), 终点为(L,0,0)的OBB,L为机身长度，目前让机身头尾尺寸相同。通过这些参数的变化范围来参数化的生成数据集。同时修改visualize_dataset.py文件以适配新的OBB定义。
+新建train_GAN.py,读取自编码器的权重继续训练
