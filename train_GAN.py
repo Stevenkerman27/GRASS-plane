@@ -4,8 +4,6 @@ from time import gmtime, strftime
 from datetime import datetime
 import math
 import copy
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
@@ -41,6 +39,10 @@ def setup_training():
     if config.gpu < 0 and config.cuda:
         config.gpu = 0
     torch.cuda.set_device(config.gpu)
+
+    if config.no_plot:
+        import matplotlib
+        matplotlib.use('Agg')
     
     print("Loading pre-trained models...")
     # Using cpu to load first to avoid device mismatch, then move to cuda if needed
@@ -48,6 +50,11 @@ def setup_training():
     decoder = torch.load(os.path.join(config.save_path, 'vae_decoder_model.pkl'), map_location='cpu', weights_only=False)
     
     discriminator = GANDiscriminator(encoder, config)
+    
+    # Freeze encoder
+    for param in discriminator.encoder.parameters():
+        param.requires_grad = False
+    discriminator.encoder.eval()
     
     if config.cuda:
         discriminator.cuda()
@@ -57,7 +64,8 @@ def setup_training():
     grass_data = GRASSDataset(config.data_path)
     train_iter = torch.utils.data.DataLoader(grass_data, batch_size=config.gan_batch_size, shuffle=True, collate_fn=my_collate)
     
-    d_opt = torch.optim.Adam(discriminator.parameters(), lr=config.gan_lr, betas=(0.5, 0.9))
+    # Scope d_opt to only discriminator.fc
+    d_opt = torch.optim.Adam(discriminator.fc.parameters(), lr=config.gan_lr, betas=(0.5, 0.9))
     g_opt = torch.optim.Adam(decoder.parameters(), lr=config.gan_lr, betas=(0.5, 0.9))
     
     return config, discriminator, decoder, train_iter, d_opt, g_opt
@@ -90,34 +98,39 @@ def compute_gradient_penalty(discriminator, real_features, fake_features, config
 def train_discriminator_step(batch, discriminator, decoder, d_opt, config):
     d_opt.zero_grad()
     
-    # 1. Real Features
+    # 1. Real Features (Aligned to [-1, 1] space)
     enc_fold = FoldExt(cuda=config.cuda)
     enc_fold_nodes = []
     for example in batch:
         enc_fold_nodes.append(grassmodel.encode_structure_fold(enc_fold, example))
-    enc_fold_nodes = enc_fold.apply(discriminator.encoder, [enc_fold_nodes])
-    enc_fold_nodes = torch.split(enc_fold_nodes[0], 1, 0)
     
-    real_features = []
-    for fnode in enc_fold_nodes:
-        root_code, kl_div = torch.chunk(fnode, 2, 1)
-        real_features.append(root_code)
-    real_features = torch.cat(real_features, dim=0)
+    with torch.no_grad():
+        enc_fold_nodes = enc_fold.apply(discriminator.encoder, [enc_fold_nodes])
+        enc_fold_nodes = torch.split(enc_fold_nodes[0], 1, 0)
+        
+        real_features_list = []
+        for fnode in enc_fold_nodes:
+            root_code, _ = torch.chunk(fnode, 2, 1)
+            # Pass through sampleDecoder to align space
+            real_features_list.append(decoder.sampleDecoder(root_code))
+        real_features = torch.cat(real_features_list, dim=0)
     
-    d_real = discriminator(real_features).mean()
-    
-    # 2. Fake Features
+    # 2. Fake Features (Already in [-1, 1] space)
     z_p = torch.randn(len(batch), config.feature_size)
     if config.cuda:
         z_p = z_p.cuda()
     
+    # Use current sampleDecoder for fake features (will be detached for D update)
     fake_features = decoder.sampleDecoder(z_p)
+    
+    # 3. Discriminator Outputs
+    d_real = discriminator(real_features).mean()
     d_fake = discriminator(fake_features).mean()
     
-    # 3. Gradient Penalty
+    # 4. Gradient Penalty
     gp = compute_gradient_penalty(discriminator, real_features.data, fake_features.data, config)
     
-    # 4. Total D Loss
+    # 5. Total D Loss
     d_loss = d_fake - d_real + config.lambda_gp * gp
     d_loss.backward()
     d_opt.step()
@@ -193,7 +206,9 @@ def run_lr_range_test(config, dataloader, discriminator, decoder):
     for i, batch in enumerate(dataloader):
         current_lr = optimizer_D.param_groups[0]['lr']
         
-        d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, optimizer_D, config)
+        # Standard WGAN-GP: Update D n_critic times first
+        for _ in range(config.n_critic):
+            d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, optimizer_D, config)
         
         avg_d_loss = beta * avg_d_loss + (1 - beta) * d_loss
         smoothed_d_loss = avg_d_loss / (1 - beta ** (i + 1))
@@ -208,12 +223,9 @@ def run_lr_range_test(config, dataloader, discriminator, decoder):
         if smoothed_d_loss < best_d_loss:
             best_d_loss = smoothed_d_loss
             
-        current_g_loss_val = 0.0
-        if i % config.n_critic == 0:
-            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, optimizer_G, config)
-            current_g_loss_val = g_loss
-        else:
-            current_g_loss_val = g_losses_record[-1] if len(g_losses_record) > 0 else 0.0
+        # Then update G
+        g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, optimizer_G, config)
+        current_g_loss_val = g_loss
 
         avg_g_loss = beta * avg_g_loss + (1 - beta) * current_g_loss_val
         smoothed_g_loss = avg_g_loss / (1 - beta ** (i + 1))
@@ -292,12 +304,12 @@ def main():
     
     for epoch in range(config.gan_epochs):
         for batch_idx, batch in enumerate(train_iter):
-            # Train Discriminator
-            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, g_opt, config)
-            
-            # Train Generator n_critic times
+            # 1. Update Discriminator n_critic times
             for _ in range(config.n_critic):
                 d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, config)
+            
+            # 2. Update Generator once
+            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, g_opt, config)
             
             if batch_idx % config.show_log_every == 0:
                 print(log_template.format(strftime("%H:%M:%S", time.gmtime(time.time()-start)),

@@ -17,6 +17,8 @@
   - `nn.CrossEntropyLoss` 的 target 在 batch_size 为 1 时必须确保维度匹配（通常需要 `target.unsqueeze(0)`）。
   - 在手动聚合来自 Fold 的节点损失时，优先使用 `torch.stack` 而非 `torch.cat` 以处理 0 维损失张量。
 - **变量封装**: 停止显式使用 `torch.autograd.Variable`。在 PyTorch 0.4+ 中，Tensor 已合并 Variable 功能，需统一改为 `.detach()`。
+- **特征空间对齐 (Feature Alignment)**: 判别器必须在同一数值量级比较特征。真实样本的 latent code 须通过生成器的 `SampleDecoder` (Tanh 层) 转换至 `[-1, 1]` 空间后，再与生成特征对比，严禁跨空间比较（如高斯分布对比 Tanh 输出），否则会导致生成器 Loss 指数增长。
+- **WGAN-GP 训练时序**: 严格执行 `n_critic` 次判别器 (Critic) 更新后执行 1 次生成器更新的标准时序，确保判别器能准确估计真假分布间的 EM 距离。
 
 ## 3. 环境陷阱与第三方 API 怪癖 (Environment & API Peculiarities)
 

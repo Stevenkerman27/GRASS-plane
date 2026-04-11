@@ -285,7 +285,7 @@ def vrrotvec2mat(rotvector):
     x = rotvector[0]
     y = rotvector[1]
     z = rotvector[2]
-    m = torch.FloatTensor([[t*x*x+c, t*x*y-s*z, t*x*z+s*y], [t*x*y+s*z, t*y*y+c, t*y*z-s*x], [t*x*z-s*y, t*y*z+s*x, t*z*z+c]]).cuda()
+    m = torch.tensor([[t*x*x+c, t*x*y-s*z, t*x*z+s*y], [t*x*y+s*z, t*y*y+c, t*y*z-s*x], [t*x*z-s*y, t*y*z+s*x, t*z*z+c]], device=rotvector.device)
     return m
 
 def decode_structure(model, root_code):
@@ -293,7 +293,7 @@ def decode_structure(model, root_code):
     Decode a root code into a tree structure of boxes
     """
     decode = model.sampleDecoder(root_code)
-    syms = [torch.ones(8).mul(10).cuda()]
+    syms = [torch.ones(8, device=root_code.device).mul(10)]
     #初始化工作栈（放入根节点），以及一个空列表用于收集最终生成的所有 3D 包围盒。
     stack = [decode]
     boxes = []
