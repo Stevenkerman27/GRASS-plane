@@ -45,7 +45,11 @@ def get_s_boxes(reBox, s):
             newc1 = rotm.matmul(c1.add(-f2)).add(f2)
             newc2 = rotm.matmul(c2.add(-f2)).add(f2)
             
-            newbox = torch.cat([newc1, newc2, dims])
+            if len(bList) >= 13:
+                cls = torch.cat([bList[10], bList[11], bList[12]])
+                newbox = torch.cat([newc1, newc2, dims, cls])
+            else:
+                newbox = torch.cat([newc1, newc2, dims])
             reBoxes.append(newbox.unsqueeze(0))
 
     if l2 < 0.15:
@@ -66,7 +70,11 @@ def get_s_boxes(reBox, s):
             c2 = torch.cat([bList[3], bList[4], bList[5]])
             newc1 = c1.add(trans.mul(i+1))
             newc2 = c2.add(trans.mul(i+1))
-            newbox = torch.cat([newc1, newc2, dims])
+            if len(bList) >= 13:
+                cls = torch.cat([bList[10], bList[11], bList[12]])
+                newbox = torch.cat([newc1, newc2, dims, cls])
+            else:
+                newbox = torch.cat([newc1, newc2, dims])
             reBoxes.append(newbox.unsqueeze(0))
 
     if l3 < 0.15:
@@ -89,7 +97,11 @@ def get_s_boxes(reBox, s):
         dist2 = torch.sum(v2 * ref_normal)
         newc2 = c2.add(ref_normal.mul(-2 * dist2))
         
-        newbox = torch.cat([newc1, newc2, dims])
+        if len(bList) >= 13:
+            cls = torch.cat([bList[10], bList[11], bList[12]])
+            newbox = torch.cat([newc1, newc2, dims, cls])
+        else:
+            newbox = torch.cat([newc1, newc2, dims])
         reBoxes.append(newbox.unsqueeze(0))
 
     return reBoxes

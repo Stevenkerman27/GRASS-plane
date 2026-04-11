@@ -2,6 +2,11 @@ import time
 import os
 from time import gmtime, strftime
 from datetime import datetime
+import math
+import copy
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import torch
 from torch import nn
 import torch.utils.data
@@ -156,9 +161,110 @@ def train_generator_step(batch, discriminator, decoder, g_opt, config):
     
     return g_loss.item(), g_adv_loss.item(), recon_loss.item(), kldiv_loss.item()
 
+def run_lr_range_test(config, dataloader, discriminator, decoder):
+    print("--- Starting LR Range Test ---")
+    
+    # Save initial state
+    d_state = copy.deepcopy(discriminator.state_dict())
+    g_state = copy.deepcopy(decoder.state_dict())
+    
+    lr_start = 1e-7
+    lr_end = 1.0  # WGAN 通常测到 1.0 足够发现崩溃点
+    
+    optimizer_G = torch.optim.Adam(decoder.parameters(), lr=lr_start, betas=(0.5, 0.9))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr_start, betas=(0.5, 0.9))
+    
+    total_steps = len(dataloader)
+    if total_steps <= 1:
+        total_steps = 2
+        
+    lr_mult = (lr_end / lr_start) ** (1 / total_steps)
+    
+    lrs = []
+    d_losses_record = []
+    g_losses_record = []
+    
+    beta = 0.2
+    avg_d_loss = 0.0
+    avg_g_loss = 0.0
+    best_d_loss = float('inf')
+    initial_d_loss = None
+    
+    for i, batch in enumerate(dataloader):
+        current_lr = optimizer_D.param_groups[0]['lr']
+        
+        d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, optimizer_D, config)
+        
+        avg_d_loss = beta * avg_d_loss + (1 - beta) * d_loss
+        smoothed_d_loss = avg_d_loss / (1 - beta ** (i + 1))
+        
+        if i == 0:
+            initial_d_loss = smoothed_d_loss
+            
+        if i > 0 and (abs(smoothed_d_loss) > abs(initial_d_loss) * 2 or math.isnan(smoothed_d_loss)):
+            print(f"Loss diverged at step {i}, stopping LR test early.")
+            break
+            
+        if smoothed_d_loss < best_d_loss:
+            best_d_loss = smoothed_d_loss
+            
+        current_g_loss_val = 0.0
+        if i % config.n_critic == 0:
+            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, optimizer_G, config)
+            current_g_loss_val = g_loss
+        else:
+            current_g_loss_val = g_losses_record[-1] if len(g_losses_record) > 0 else 0.0
+
+        avg_g_loss = beta * avg_g_loss + (1 - beta) * current_g_loss_val
+        smoothed_g_loss = avg_g_loss / (1 - beta ** (i + 1))
+        
+        lrs.append(current_lr)
+        d_losses_record.append(smoothed_d_loss)
+        g_losses_record.append(smoothed_g_loss)
+        
+        for param_group in optimizer_G.param_groups:
+            param_group['lr'] *= lr_mult
+        for param_group in optimizer_D.param_groups:
+            param_group['lr'] *= lr_mult
+            
+    plt.figure(figsize=(10, 6))
+    plt.plot(lrs, d_losses_record, label='Smoothed D Loss')
+    plt.plot(lrs, g_losses_record, label='Smoothed G Loss')
+    plt.xscale('log')
+    plt.xlabel('Learning Rate (Log Scale)')
+    plt.ylabel('Loss')
+    plt.title('LR Range Test')
+    plt.legend()
+    plt.grid(True, which="both", ls="-", alpha=0.5)
+    os.makedirs(config.save_path, exist_ok=True)
+    img_path = os.path.join(config.save_path, 'lr_range_test.png')
+    plt.savefig(img_path)
+    plt.close()
+    
+    discriminator.load_state_dict(d_state)
+    decoder.load_state_dict(g_state)
+    
+    while True:
+        try:
+            user_lr = input(f"Please examine '{img_path}' and enter the selected learning rate: ")
+            final_lr = float(user_lr.strip())
+            if final_lr > 0:
+                break
+        except ValueError:
+            pass
+            
+    return final_lr
+
 def main():
     config, discriminator, decoder, train_iter, d_opt, g_opt = setup_training()
     
+    final_lr = run_lr_range_test(config, train_iter, discriminator, decoder)
+    config.gan_lr = final_lr
+    for param_group in d_opt.param_groups:
+        param_group['lr'] = final_lr
+    for param_group in g_opt.param_groups:
+        param_group['lr'] = final_lr
+        
     print("Start GAN training ...")
     start = time.time()
     
@@ -187,11 +293,11 @@ def main():
     for epoch in range(config.gan_epochs):
         for batch_idx, batch in enumerate(train_iter):
             # Train Discriminator
-            d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, config)
+            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, g_opt, config)
             
             # Train Generator n_critic times
             for _ in range(config.n_critic):
-                g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, g_opt, config)
+                d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, config)
             
             if batch_idx % config.show_log_every == 0:
                 print(log_template.format(strftime("%H:%M:%S", time.gmtime(time.time()-start)),

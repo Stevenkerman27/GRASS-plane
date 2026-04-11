@@ -17,8 +17,19 @@ def tryPlot():
 def draw(ax, p, color):
     import numpy as np
     from numpy import linalg as LA
-    
-    # 10D format: [x1, y1, z1, x2, y2, z2, L1, H1, L2, H2]
+    import matplotlib.pyplot as plt
+
+    # Determine semantic color if 13D
+    if len(p) >= 13:
+        cls_idx = np.argmax(p[10:13])
+        if cls_idx == 0:
+            color = 'gray' # Fuselage
+        elif cls_idx == 1:
+            color = 'blue' # Wings / Stabilizers
+        elif cls_idx == 2:
+            color = 'red'  # Engines
+
+    # 10D geometry format: [x1, y1, z1, x2, y2, z2, L1, H1, L2, H2]
     c1 = np.array(p[0:3])
     c2 = np.array(p[3:6])
     L1, H1 = p[6], p[7]

@@ -186,9 +186,11 @@ class BoxDecoder(nn.Module):
         self.tanh = nn.Tanh()
 
     def forward(self, parent_feature):
+        import torch
         vector = self.mlp(parent_feature)
-        vector = self.tanh(vector)
-        return vector
+        vector_geom = self.tanh(vector[:, :10])
+        vector_cls = vector[:, 10:]
+        return torch.cat([vector_geom, vector_cls], dim=1)
 
 class GRASSDecoder(nn.Module):
     def __init__(self, config):
@@ -216,8 +218,20 @@ class GRASSDecoder(nn.Module):
     def nodeClassifier(self, feature):
         return self.node_classifier(feature)
 
-    def boxLossEstimator(self, box_feature, gt_box_feature):
-        return torch.stack([self.mseLoss(b, gt).mul(0.4) for b, gt in zip(box_feature, gt_box_feature)], 0)
+    def boxLossEstimator(self, box_feature, gt_box_feature, lambda_cls=1.0):
+        import torch
+        losses = []
+        for b, gt in zip(box_feature, gt_box_feature):
+            geom_l = self.mseLoss(b[:10], gt[:10]).mul(0.4)
+            
+            # creLoss expects input (1, C) and target (1)
+            pred_logits = b[10:].unsqueeze(0)
+            target_class = torch.argmax(gt[10:]).unsqueeze(0)
+            cls_l = self.creLoss(pred_logits, target_class)
+            
+            losses.append(geom_l + lambda_cls * cls_l)
+            
+        return torch.stack(losses, 0)
 
     def symLossEstimator(self, sym_param, gt_sym_param):
         return torch.stack([self.mseLoss(s, gt).mul(0.5) for s, gt in zip(sym_param, gt_sym_param)], 0)
@@ -327,7 +341,11 @@ def decode_structure(model, root_code):
                     newc1 = rotm.matmul(c1.add(-f2)).add(f2)
                     newc2 = rotm.matmul(c2.add(-f2)).add(f2)
                     
-                    newbox = torch.cat([newc1, newc2, dims])
+                    if len(bList) >= 13:
+                        cls = torch.cat([bList[10], bList[11], bList[12]])
+                        newbox = torch.cat([newc1, newc2, dims, cls])
+                    else:
+                        newbox = torch.cat([newc1, newc2, dims])
                     reBoxes.append(newbox.unsqueeze(0))
 
             if l2 < 0.15:
@@ -348,7 +366,11 @@ def decode_structure(model, root_code):
                     c2 = torch.cat([bList[3], bList[4], bList[5]])
                     newc1 = c1.add(trans.mul(i+1))
                     newc2 = c2.add(trans.mul(i+1))
-                    newbox = torch.cat([newc1, newc2, dims])
+                    if len(bList) >= 13:
+                        cls = torch.cat([bList[10], bList[11], bList[12]])
+                        newbox = torch.cat([newc1, newc2, dims, cls])
+                    else:
+                        newbox = torch.cat([newc1, newc2, dims])
                     reBoxes.append(newbox.unsqueeze(0))
 
             if l3 < 0.15:
@@ -371,7 +393,11 @@ def decode_structure(model, root_code):
                 dist2 = torch.sum(v2 * ref_normal)
                 newc2 = c2.add(ref_normal.mul(-2 * dist2))
                 
-                newbox = torch.cat([newc1, newc2, dims])
+                if len(bList) >= 13:
+                    cls = torch.cat([bList[10], bList[11], bList[12]])
+                    newbox = torch.cat([newc1, newc2, dims, cls])
+                else:
+                    newbox = torch.cat([newc1, newc2, dims])
                 reBoxes.append(newbox.unsqueeze(0))
 
             boxes.extend(reBoxes)

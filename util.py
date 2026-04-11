@@ -3,7 +3,7 @@ from argparse import ArgumentParser
 
 def get_args():
     parser = ArgumentParser(description='grass_pytorch')
-    parser.add_argument('--box_code_size', type=int, default=10)
+    parser.add_argument('--box_code_size', type=int, default=13)
     parser.add_argument('--feature_size', type=int, default=80)
     parser.add_argument('--hidden_size', type=int, default=200)
     parser.add_argument('--symmetry_size', type=int, default=8)
@@ -19,7 +19,7 @@ def get_args():
     parser.add_argument('--gan_epochs', type=int, default=30, help='Number of epochs for GAN training')
     parser.add_argument('--gan_batch_size', type=int, default=12, help='Batch size for GAN training')
 
-    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--epochs', type=int, default=18)
     parser.add_argument('--batch_size', type=int, default=12)
     parser.add_argument('--show_log_every', type=int, default=3)
     parser.add_argument('--save_log', action='store_true', default=False)

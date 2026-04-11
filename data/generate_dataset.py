@@ -13,7 +13,7 @@ SYM_OP = 2
 def generate_aircraft():
     """
     Generates a single conventional fixed-wing aircraft.
-    Returns lists of: boxes (10D), ops (int), syms (8D)
+    Returns lists of: boxes (13D), ops (int), syms (8D)
     """
     boxes = []
     ops = []
@@ -24,8 +24,8 @@ def generate_aircraft():
     H_fuse = random.uniform(0.08, 0.15)
     W_fuse = random.uniform(0.08, 0.15)
     # Nose to Tail along X
-    # Format: [x1, y1, z1, x2, y2, z2, L1, H1, L2, H2]
-    fuse_box = [0, 0, 0, L_fuse, 0, 0, W_fuse, H_fuse, W_fuse, H_fuse]
+    # Format: [x1, y1, z1, x2, y2, z2, L1, H1, L2, H2, C_fuse, C_wing, C_eng]
+    fuse_box = [0, 0, 0, L_fuse, 0, 0, W_fuse, H_fuse, W_fuse, H_fuse, 1, 0, 0]
     
     boxes.append(fuse_box)
     ops.append(BOX_OP)
@@ -46,7 +46,7 @@ def generate_aircraft():
     x2_w, y2_w, z2_w = wing_pos_x + sweep_dist, y1_w + wing_span_half, dihedral_dist
     
     wing_box = [x1_w, y1_w, z1_w, x2_w, y2_w, z2_w, 
-                wing_root_chord, wing_root_thick, wing_tip_chord, wing_tip_thick]
+                wing_root_chord, wing_root_thick, wing_tip_chord, wing_tip_thick, 0, 1, 0]
     
     boxes.append(wing_box)
     ops.append(BOX_OP)
@@ -66,7 +66,7 @@ def generate_aircraft():
     
     eng1_box = [x_e1_center - eng_length/2, y_e1, z_e1,
                 x_e1_center + eng_length/2, y_e1, z_e1,
-                eng_width, eng_height, eng_width, eng_height]
+                eng_width, eng_height, eng_width, eng_height, 0, 0, 1]
     
     boxes.append(eng1_box)
     ops.append(BOX_OP)
@@ -81,7 +81,7 @@ def generate_aircraft():
         
         eng2_box = [x_e2_center - eng_length/2, y_e2, z_e2,
                     x_e2_center + eng_length/2, y_e2, z_e2,
-                    eng_width, eng_height, eng_width, eng_height]
+                    eng_width, eng_height, eng_width, eng_height, 0, 0, 1]
         
         boxes.append(eng2_box)
         ops.append(BOX_OP)
@@ -112,7 +112,7 @@ def generate_aircraft():
     x2_h, y2_h, z2_h = htail_pos_x + htail_sweep, y1_h + htail_span_half, 0 # no dihedral usually
     
     htail_box = [x1_h, y1_h, z1_h, x2_h, y2_h, z2_h,
-                 htail_root_chord, htail_thick, htail_tip_chord, htail_thick]
+                 htail_root_chord, htail_thick, htail_tip_chord, htail_thick, 0, 1, 0]
                  
     boxes.append(htail_box)
     ops.append(BOX_OP)
@@ -138,7 +138,7 @@ def generate_aircraft():
     x2_v, y2_v, z2_v = vtail_pos_x + vtail_sweep, 0, z1_v + vtail_span
     
     vtail_box = [x1_v, y1_v, z1_v, x2_v, y2_v, z2_v,
-                 vtail_root_chord, vtail_thick, vtail_tip_chord, vtail_thick]
+                 vtail_root_chord, vtail_thick, vtail_tip_chord, vtail_thick, 0, 1, 0]
                  
     boxes.append(vtail_box)
     ops.append(BOX_OP)
@@ -175,7 +175,7 @@ def main():
     
     for b, o, s in samples:
         # pad boxes
-        b_mat = np.zeros((10, MAX_BOXES))
+        b_mat = np.zeros((13, MAX_BOXES))
         for i, box in enumerate(b):
             b_mat[:, i] = box
         padded_boxes.append(b_mat)
@@ -191,7 +191,7 @@ def main():
         padded_syms.append(s_mat)
         
     # Concatenate along axis 1
-    final_boxes = np.concatenate(padded_boxes, axis=1) # [10, NUM_SAMPLES * MAX_BOXES]
+    final_boxes = np.concatenate(padded_boxes, axis=1) # [13, NUM_SAMPLES * MAX_BOXES]
     final_ops = np.concatenate(padded_ops, axis=1)     # [MAX_OPS, NUM_SAMPLES]
     final_syms = np.concatenate(padded_syms, axis=1)   # [8, NUM_SAMPLES * MAX_SYMS]
     
