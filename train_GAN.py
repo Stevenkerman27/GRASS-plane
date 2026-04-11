@@ -1,0 +1,224 @@
+import time
+import os
+from time import gmtime, strftime
+from datetime import datetime
+import torch
+from torch import nn
+import torch.utils.data
+from torchfoldext import FoldExt
+import util
+from dynamicplot import DynamicPlot
+
+from grassdata import GRASSDataset
+from grassmodel import GRASSDecoder
+import grassmodel
+
+class GANDiscriminator(nn.Module):
+    def __init__(self, encoder, config):
+        super(GANDiscriminator, self).__init__()
+        self.encoder = encoder
+        # Map from feature_size to hidden_size, then to 1 (linear output for WGAN-GP)
+        self.fc = nn.Sequential(
+            nn.Linear(config.feature_size, config.hidden_size),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(config.hidden_size, 1)
+        )
+
+    def forward(self, feature):
+        return self.fc(feature)
+
+def my_collate(batch):
+    return batch
+
+def setup_training():
+    config = util.get_args()
+    config.cuda = not config.no_cuda
+    if config.gpu < 0 and config.cuda:
+        config.gpu = 0
+    torch.cuda.set_device(config.gpu)
+    
+    print("Loading pre-trained models...")
+    # Using cpu to load first to avoid device mismatch, then move to cuda if needed
+    encoder = torch.load(os.path.join(config.save_path, 'vae_encoder_model.pkl'), map_location='cpu', weights_only=False)
+    decoder = torch.load(os.path.join(config.save_path, 'vae_decoder_model.pkl'), map_location='cpu', weights_only=False)
+    
+    discriminator = GANDiscriminator(encoder, config)
+    
+    if config.cuda:
+        discriminator.cuda()
+        decoder.cuda()
+        
+    print("Loading data ...")
+    grass_data = GRASSDataset(config.data_path)
+    train_iter = torch.utils.data.DataLoader(grass_data, batch_size=config.gan_batch_size, shuffle=True, collate_fn=my_collate)
+    
+    d_opt = torch.optim.Adam(discriminator.parameters(), lr=config.gan_lr, betas=(0.5, 0.9))
+    g_opt = torch.optim.Adam(decoder.parameters(), lr=config.gan_lr, betas=(0.5, 0.9))
+    
+    return config, discriminator, decoder, train_iter, d_opt, g_opt
+
+def compute_gradient_penalty(discriminator, real_features, fake_features, config):
+    alpha = torch.rand(real_features.size(0), 1)
+    if config.cuda:
+        alpha = alpha.cuda()
+        
+    interpolates = (alpha * real_features + ((1 - alpha) * fake_features)).requires_grad_(True)
+    d_interpolates = discriminator(interpolates)
+    
+    fake = torch.ones(real_features.size(0), 1)
+    if config.cuda:
+        fake = fake.cuda()
+        
+    gradients = torch.autograd.grad(
+        outputs=d_interpolates,
+        inputs=interpolates,
+        grad_outputs=fake,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+    
+    gradients = gradients.view(gradients.size(0), -1)
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+    return gradient_penalty
+
+def train_discriminator_step(batch, discriminator, decoder, d_opt, config):
+    d_opt.zero_grad()
+    
+    # 1. Real Features
+    enc_fold = FoldExt(cuda=config.cuda)
+    enc_fold_nodes = []
+    for example in batch:
+        enc_fold_nodes.append(grassmodel.encode_structure_fold(enc_fold, example))
+    enc_fold_nodes = enc_fold.apply(discriminator.encoder, [enc_fold_nodes])
+    enc_fold_nodes = torch.split(enc_fold_nodes[0], 1, 0)
+    
+    real_features = []
+    for fnode in enc_fold_nodes:
+        root_code, kl_div = torch.chunk(fnode, 2, 1)
+        real_features.append(root_code)
+    real_features = torch.cat(real_features, dim=0)
+    
+    d_real = discriminator(real_features).mean()
+    
+    # 2. Fake Features
+    z_p = torch.randn(len(batch), config.feature_size)
+    if config.cuda:
+        z_p = z_p.cuda()
+    
+    fake_features = decoder.sampleDecoder(z_p)
+    d_fake = discriminator(fake_features).mean()
+    
+    # 3. Gradient Penalty
+    gp = compute_gradient_penalty(discriminator, real_features.data, fake_features.data, config)
+    
+    # 4. Total D Loss
+    d_loss = d_fake - d_real + config.lambda_gp * gp
+    d_loss.backward()
+    d_opt.step()
+    
+    return d_loss.item(), d_real.item(), d_fake.item(), gp.item()
+
+def train_generator_step(batch, discriminator, decoder, g_opt, config):
+    g_opt.zero_grad()
+    
+    # 1. Adversarial Loss
+    z_p = torch.randn(len(batch), config.feature_size)
+    if config.cuda:
+        z_p = z_p.cuda()
+    
+    fake_features = decoder.sampleDecoder(z_p)
+    g_adv_loss = -discriminator(fake_features).mean()
+    
+    # 2. Reconstruction & KL Loss (on real batch)
+    enc_fold = FoldExt(cuda=config.cuda)
+    enc_fold_nodes = []
+    for example in batch:
+        enc_fold_nodes.append(grassmodel.encode_structure_fold(enc_fold, example))
+    enc_fold_nodes = enc_fold.apply(discriminator.encoder, [enc_fold_nodes])
+    enc_fold_nodes = torch.split(enc_fold_nodes[0], 1, 0)
+    
+    dec_fold = FoldExt(cuda=config.cuda)
+    dec_fold_nodes = []
+    kld_fold_nodes = []
+    for example, fnode in zip(batch, enc_fold_nodes):
+        root_code, kl_div = torch.chunk(fnode, 2, 1)
+        dec_fold_nodes.append(grassmodel.decode_structure_fold(dec_fold, root_code, example))
+        kld_fold_nodes.append(kl_div)
+        
+    total_loss = dec_fold.apply(decoder, [dec_fold_nodes, kld_fold_nodes])
+    recon_loss = total_loss[0].sum() / len(batch)
+    kldiv_loss = total_loss[1].sum().mul(-0.05) / len(batch)
+    
+    g_loss = g_adv_loss + config.alpha1 * recon_loss + config.alpha2 * kldiv_loss
+    g_loss.backward()
+    g_opt.step()
+    
+    return g_loss.item(), g_adv_loss.item(), recon_loss.item(), kldiv_loss.item()
+
+def main():
+    config, discriminator, decoder, train_iter, d_opt, g_opt = setup_training()
+    
+    print("Start GAN training ...")
+    start = time.time()
+    
+    total_iter = config.gan_epochs * len(train_iter)
+    if not config.no_plot:
+        plot_x = [x for x in range(total_iter)]
+        plot_d_loss = [None for x in range(total_iter)]
+        plot_g_loss = [None for x in range(total_iter)]
+        plot_recon_loss = [None for x in range(total_iter)]
+        dyn_plot = DynamicPlot(title='GAN Training loss over iterations (GRASS)', xdata=plot_x, ydata={'D_Loss':plot_d_loss, 'G_Loss':plot_g_loss, 'Reconstruction_Loss':plot_recon_loss})
+        iter_id = 0
+        max_loss = 0
+        min_loss = 0
+    
+    if config.save_snapshot:
+        if not os.path.exists(config.save_path):
+            os.makedirs(config.save_path)
+        snapshot_folder = os.path.join(config.save_path, 'gan_snapshots_'+strftime("%Y-%m-%d_%H-%M-%S", gmtime()))
+        if not os.path.exists(snapshot_folder):
+            os.makedirs(snapshot_folder)
+            
+    header = '     Time    Epoch     Iteration    Progress(%)  D_Loss  G_Loss  ReconLoss'
+    log_template = ' '.join('{:>9s},{:>5.0f}/{:<5.0f},{:>5.0f}/{:<5.0f},{:>9.1f}%,{:>8.2f},{:>8.2f},{:>10.2f}'.split(','))
+    print(header)
+    
+    for epoch in range(config.gan_epochs):
+        for batch_idx, batch in enumerate(train_iter):
+            # Train Discriminator
+            d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, config)
+            
+            # Train Generator n_critic times
+            for _ in range(config.n_critic):
+                g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, decoder, g_opt, config)
+            
+            if batch_idx % config.show_log_every == 0:
+                print(log_template.format(strftime("%H:%M:%S", time.gmtime(time.time()-start)),
+                    epoch, config.gan_epochs, 1+batch_idx, len(train_iter),
+                    100. * (1+batch_idx+len(train_iter)*epoch) / (len(train_iter)*config.gan_epochs),
+                    d_loss, g_loss, recon))
+            
+            if not config.no_plot:
+                plot_d_loss[iter_id] = d_loss
+                plot_g_loss[iter_id] = g_loss
+                plot_recon_loss[iter_id] = recon
+                max_loss = max(max_loss, d_loss, g_loss, recon)
+                min_loss = min(min_loss, d_loss, g_loss, recon)
+                dyn_plot.setxlim(0., (iter_id+1)*1.05)
+                dyn_plot.setylim(min_loss - 0.1 * abs(min_loss), max_loss*1.05)
+                dyn_plot.update_plots(ydata={'D_Loss':plot_d_loss, 'G_Loss':plot_g_loss, 'Reconstruction_Loss':plot_recon_loss})
+                iter_id += 1
+                    
+        if config.save_snapshot and (epoch+1) % config.save_snapshot_every == 0:
+            print("Saving snapshots ...")
+            torch.save(discriminator.encoder, snapshot_folder+f'//gan_encoder_epoch_{epoch+1}.pkl')
+            torch.save(decoder, snapshot_folder+f'//gan_decoder_epoch_{epoch+1}.pkl')
+            
+    print("Saving final models ...")
+    torch.save(discriminator.encoder, config.save_path+'//gan_encoder_model.pkl')
+    torch.save(decoder, config.save_path+'//gan_decoder_model.pkl')
+    print("DONE")
+
+if __name__ == "__main__":
+    main()
