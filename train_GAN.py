@@ -111,8 +111,8 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, config):
         real_features_list = []
         for fnode in enc_fold_nodes:
             root_code, _ = torch.chunk(fnode, 2, 1)
-            # Pass through sampleDecoder to align space
-            real_features_list.append(decoder.sampleDecoder(root_code))
+            # Remove sampleDecoder to use raw latent space
+            real_features_list.append(root_code)
         real_features = torch.cat(real_features_list, dim=0)
     
     # 2. Fake Features (Already in [-1, 1] space)

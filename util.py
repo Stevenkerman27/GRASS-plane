@@ -11,15 +11,18 @@ def get_args():
     parser.add_argument('--max_sym_num', type=int, default=10)
 
     # GAN Hyperparameters
-    parser.add_argument('--alpha1', type=float, default=0.01, help='Weight for reconstruction loss in GAN training')
-    parser.add_argument('--alpha2', type=float, default=10.0, help='Weight for KL divergence loss in GAN training')
+    parser.add_argument('--alpha1', type=float, default=0.001, help='Weight for reconstruction loss in GAN training')
+    parser.add_argument('--alpha2', type=float, default=0.1, help='Weight for KL divergence loss in GAN training')
     parser.add_argument('--lambda_gp', type=float, default=10.0, help='Weight for gradient penalty in WGAN-GP')
     parser.add_argument('--gan_lr', type=float, default=1e-4, help='Learning rate for GAN optimizers')
     parser.add_argument('--n_critic', type=int, default=1, help='Number of generator updates per discriminator update')
-    parser.add_argument('--gan_epochs', type=int, default=30, help='Number of epochs for GAN training')
+    parser.add_argument('--gan_epochs', type=int, default=10, help='Number of epochs for GAN training')
     parser.add_argument('--gan_batch_size', type=int, default=12, help='Batch size for GAN training')
 
-    parser.add_argument('--epochs', type=int, default=18)
+    # VAE parameters
+    parser.add_argument('--epochs', type=int, default=500)
+    parser.add_argument('--kl_weight_target', type=float, default=0.05)
+    parser.add_argument('--kl_anneal_epochs', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=12)
     parser.add_argument('--show_log_every', type=int, default=3)
     parser.add_argument('--save_log', action='store_true', default=False)

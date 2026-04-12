@@ -146,6 +146,37 @@ def generate_aircraft():
     # Attach Vertical Tail
     ops.append(ADJ_OP)
     
+    # --- Isotropic Scaling per instance ---
+    max_val = 0.0
+    for box in boxes:
+        for val in box[:10]:
+            if abs(val) > max_val:
+                max_val = abs(val)
+
+    if max_val > 0:
+        for i in range(len(boxes)):
+            # Normalize continuous values (0-9) to [-1, 1]
+            for j in range(10):
+                boxes[i][j] = (boxes[i][j] / max_val) * 2.0 - 1.0
+            # Map one-hot categories (10-12) from {0, 1} to {-1, 1}
+            for j in range(10, 13):
+                boxes[i][j] = boxes[i][j] * 2.0 - 1.0
+        
+        for i in range(len(syms)):
+            # s[0] is the type flag (-1: Rot, 0: Trans, 1: Refl)
+            sym_type = round(syms[i][0])
+            
+            # 1-3: Normals, Axes, or Translation Vector
+            if sym_type == 0: # Translational: it's a delta vector
+                for j in range(1, 4):
+                    syms[i][j] = (syms[i][j] / max_val) # Scale only, NO shift
+            else: # Reflective or Rotational: it's a direction/unit vector
+                pass # Normals/Axes should NOT be scaled or shifted
+            
+            # 4-6: Reference Points, Centers, or End Points
+            for j in range(4, 7):
+                syms[i][j] = (syms[i][j] / max_val) * 2.0 - 1.0
+
     return boxes, ops, syms
 
 def main():

@@ -155,7 +155,10 @@ def main():
         extract_boxes(tree.root, identity_s, boxes)
         
         if len(boxes) > 0:
-            showGenshape(boxes)
+            # Denormalize from [-1, 1] back to [0, 1] for visualization
+            boxes_np = np.array(boxes)
+            boxes_denorm = (boxes_np + 1.0) / 2.0
+            showGenshape(boxes_denorm)
         else:
             print(f"Warning: No boxes found for sample {idx}")
 
