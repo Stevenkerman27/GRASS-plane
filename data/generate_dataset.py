@@ -3,149 +3,220 @@ from scipy.io import savemat
 import random
 import os
 
-NUM_SAMPLES = 300
+NUM_SAMPLES = 200
 
 # Constants matching Tree.NodeType from grassdata.py
 BOX_OP = 0
 ADJ_OP = 1
 SYM_OP = 2
 
+class TreeAssembler:
+    def __init__(self):
+        self.boxes = []
+        self.ops = []
+        self.syms = []
+
+    def push_box(self, box):
+        self.boxes.append(box)
+        self.ops.append(BOX_OP)
+        return len(self.boxes) - 1
+
+    def apply_adj(self):
+        self.ops.append(ADJ_OP)
+
+    def apply_sym(self, sym_vector):
+        self.syms.append(sym_vector)
+        self.ops.append(SYM_OP)
+
+def build_fuselage():
+    L = random.uniform(0.8, 1.5)
+    H = random.uniform(0.05, 0.15)
+    W = random.uniform(0.05, 0.15)
+    return [0, 0, 0, L, 0, 0, W, H, W, H, 1, 0, 0], L, H, W
+
+def get_engine_dims():
+    length = random.uniform(0.15, 0.25)
+    width = random.uniform(0.04, 0.08)
+    return length, width
+
+def build_engine(x, y, z, length, width):
+    return [x - length/2, y, z, x + length/2, y, z, width, width, width, width, 0, 0, 1]
+
+def build_wing(x_root, y_root, z_root, span_half, root_chord, taper, dihedral, sweep):
+    tip_chord = root_chord * taper
+    thick = random.uniform(0.02, 0.05)
+    tip_thick = thick * random.uniform(0.3, 0.9)
+    x2 = x_root + sweep
+    y2 = y_root + span_half
+    z2 = z_root + dihedral
+    return [x_root, y_root, z_root, x2, y2, z2, root_chord, thick, tip_chord, tip_thick, 0, 1, 0]
+
+def emit_engine_group(assembler, config, x, y, z, y2=None):
+    """
+    config: 'single', 'twin', 'quad'
+    (x, y, z): Primary engine position
+    y2: External engine y-offset for quad
+    """
+    length, width = get_engine_dims()
+    if config == 'single':
+        assembler.push_box(build_engine(x, 0, z, length, width))
+    elif config == 'twin':
+        assembler.push_box(build_engine(x, y, z, length, width))
+        assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]) # Mirror across YZ
+    elif config == 'quad':
+        assembler.push_box(build_engine(x, y, z, length, width))   # Inner
+        assembler.push_box(build_engine(x, y2, z, length, width))  # Outer
+        assembler.apply_adj()
+        assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+def emit_wing_engines(assembler, config, x, y, z, y2=None):
+    """
+    Specifically for wing-mounted engines on ONE side. 
+    Assumes a wing box is already at the top of the stack.
+    """
+    length, width = get_engine_dims()
+    if config == 'twin': # One engine per wing
+        assembler.push_box(build_engine(x, y, z, length, width))
+        assembler.apply_adj() # Join engine 1 to wing
+    elif config == 'quad': # Two engines per wing
+        assembler.push_box(build_engine(x, y, z, length, width)) # Inner
+        assembler.apply_adj() # Join inner engine to wing
+        assembler.push_box(build_engine(x, y2, z, length, width)) # Outer
+        assembler.apply_adj() # Join outer engine to (wing + inner engine)
+
+def build_canard_layout(assembler):
+    fuse_box, L_fuse, H_fuse, W_fuse = build_fuselage()
+    assembler.push_box(fuse_box)
+    
+    # Canard (Forewing)
+    canard_span = random.uniform(0.15, 0.3)
+    canard_box = build_wing(0.1 * L_fuse, W_fuse/2, 0, canard_span, 0.12, 0.6, 0.05, 0.05)
+    assembler.push_box(canard_box)
+    assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    assembler.apply_adj() # Connect Canard to Fuselage
+    
+    # Main Wing (Aft)
+    wing_span = random.uniform(0.5, 0.9)
+    wing_pos_x = random.uniform(0.6, 0.8) * L_fuse
+    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, 0.3, 0.4, 0.05, 0.3)
+    assembler.push_box(wing_box)
+    
+    # Engine logic for Canard
+    eng_loc = random.choice(['wing', 'rear'])
+    if eng_loc == 'wing':
+        config = random.choice(['twin', 'quad'])
+        y_inner = W_fuse/2 + wing_span * 0.3
+        y_outer = W_fuse/2 + wing_span * 0.7
+        emit_wing_engines(assembler, config, wing_pos_x + 0.1, y_inner, -0.05, y_outer)
+    
+    assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    assembler.apply_adj() # Connect Wing (and its engines) to Fuselage
+    
+    if eng_loc == 'rear':
+        config = random.choice(['single', 'twin'])
+        emit_engine_group(assembler, config, 0.95 * L_fuse, W_fuse/2 + 0.05, 0)
+        assembler.apply_adj() # Connect Rear Engines to Fuselage
+
+    # V-Tail
+    v_span = random.uniform(0.15, 0.3)
+    vtail_box = build_wing(0.95 * L_fuse, 0, H_fuse/2, v_span, 0.15, 0.5, 0, 0.1)
+    vtail_box[1] = 0; vtail_box[2] = H_fuse/2; vtail_box[4] = 0; vtail_box[5] = H_fuse/2 + v_span
+    assembler.push_box(vtail_box)
+    assembler.apply_adj() # Connect V-Tail to Fuselage
+
+def build_flying_wing(assembler):
+    L = random.uniform(0.3, 0.8)
+    H = random.uniform(0.2, 0.4)
+    W = random.uniform(0.2, 0.4)
+    fuse_box = [0, 0, 0, L, 0, 0, W, H, W, H, 1, 0, 0]
+    assembler.push_box(fuse_box)
+    
+    wing_span = random.uniform(0.8, 1.4)
+    wing_box = build_wing(0.1 * L, W/2, 0, wing_span, L*0.9, 0.2, 0.05, 0.7)
+    assembler.push_box(wing_box)
+    
+    eng_loc = random.choice(['wing', 'rear'])
+    if eng_loc == 'wing':
+        config = random.choice(['twin', 'quad'])
+        y_inner = W/2 + wing_span * 0.25
+        y_outer = W/2 + wing_span * 0.55
+        emit_wing_engines(assembler, config, 0.3 * L + 0.2, y_inner, -0.05, y_outer)
+    
+    assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    assembler.apply_adj()
+    
+    if eng_loc == 'rear':
+        # Single central engine for flying wing
+        emit_engine_group(assembler, 'single', L*0.9, 0, 0.05)
+        assembler.apply_adj()
+
+def build_conventional(assembler):
+    fuse_box, L_fuse, H_fuse, W_fuse = build_fuselage()
+    assembler.push_box(fuse_box)
+
+    # Main Wing
+    wing_span = random.uniform(0.6, 1.2)
+    wing_pos_x = random.uniform(0.25, 0.45) * L_fuse
+    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, 0.35, 0.5, 0.05, 0.2)
+    assembler.push_box(wing_box)
+
+    eng_loc = random.choice(['nose', 'wing', 'rear'])
+
+    if eng_loc == 'wing':
+        config = random.choice(['twin', 'quad'])
+        y_inner = W_fuse/2 + wing_span * 0.35
+        y_outer = W_fuse/2 + wing_span * 0.7
+        emit_wing_engines(assembler, config, wing_pos_x + 0.15, y_inner, -0.08, y_outer)
+
+    assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    assembler.apply_adj() # Connect Wing (and its engines) to Fuselage
+    
+    if eng_loc == 'nose':
+        emit_engine_group(assembler, 'single', -0.1, 0, 0)
+        assembler.apply_adj()
+    elif eng_loc == 'rear':
+        config = random.choice(['single', 'twin'])
+        # If single, put it higher (base of tail) or right at the end
+        z_off = 0.05 if config == 'single' else 0.0
+        emit_engine_group(assembler, config, 0.85 * L_fuse, W_fuse/2 + 0.08, z_off)
+        assembler.apply_adj()
+    
+    # Tail
+    tail_type = random.choice(['T', 'conventional'])
+    v_span = random.uniform(0.25, 0.4)
+    if tail_type == 'T':
+        # H-Tail is moved further aft (0.95 vs 0.9) to align with v-tail tip
+        htail_box = build_wing(L_fuse, 0, H_fuse/2 + v_span, random.uniform(0.2, 0.45), 0.12, 0.6, 0, 0.1)
+        assembler.push_box(htail_box)
+        assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        vtail_box = build_wing(0.9 * L_fuse, 0, H_fuse/2, v_span, 0.2, 0.6, 0, 0.15)
+        vtail_box[1] = 0; vtail_box[2] = H_fuse/2; vtail_box[4] = 0; vtail_box[5] = H_fuse/2 + v_span
+        assembler.push_box(vtail_box)
+        assembler.apply_adj()
+    else:
+        vtail_box = build_wing(0.92 * L_fuse, 0, H_fuse/2, v_span, 0.2, 0.6, 0, 0.15)
+        vtail_box[1] = 0; vtail_box[2] = H_fuse/2; vtail_box[4] = 0; vtail_box[5] = H_fuse/2 + v_span
+        assembler.push_box(vtail_box)
+        assembler.apply_adj()
+        htail_box = build_wing(0.88 * L_fuse, W_fuse/2, 0, random.uniform(0.2, 0.4), 0.15, 0.6, 0, 0.1)
+        assembler.push_box(htail_box)
+        assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    
+    assembler.apply_adj()
+
 def generate_aircraft():
-    """
-    Generates a single conventional fixed-wing aircraft.
-    Returns lists of: boxes (13D), ops (int), syms (8D)
-    """
-    boxes = []
-    ops = []
-    syms = []
+    assembler = TreeAssembler()
+    layout_type = random.choice(['conventional', 'canard', 'flying_wing'])
     
-    # --- 1. FUSELAGE ---
-    L_fuse = random.uniform(0.8, 1.2)
-    H_fuse = random.uniform(0.08, 0.15)
-    W_fuse = random.uniform(0.08, 0.15)
-    # Nose to Tail along X
-    # Format: [x1, y1, z1, x2, y2, z2, L1, H1, L2, H2, C_fuse, C_wing, C_eng]
-    fuse_box = [0, 0, 0, L_fuse, 0, 0, W_fuse, H_fuse, W_fuse, H_fuse, 1, 0, 0]
-    
-    boxes.append(fuse_box)
-    ops.append(BOX_OP)
-    
-    # --- 2. MAIN WING PAIR ---
-    # Right wing parameters
-    wing_pos_x = random.uniform(0.25 * L_fuse, 0.45 * L_fuse)
-    wing_span_half = random.uniform(0.4, 0.8) # y distance from root to tip
-    wing_root_chord = random.uniform(0.15, 0.3)
-    taper_ratio = random.uniform(0.3, 0.9)
-    wing_tip_chord = wing_root_chord * taper_ratio
-    wing_root_thick = random.uniform(0.02, 0.05)
-    wing_tip_thick = wing_root_thick * random.uniform(0.4, 0.9)
-    sweep_dist = random.uniform(0.0, 0.3) # x shift backward at tip
-    dihedral_dist = random.uniform(0.0, 0.1) # z shift upward at tip
-    
-    x1_w, y1_w, z1_w = wing_pos_x, W_fuse / 2.0, 0
-    x2_w, y2_w, z2_w = wing_pos_x + sweep_dist, y1_w + wing_span_half, dihedral_dist
-    
-    wing_box = [x1_w, y1_w, z1_w, x2_w, y2_w, z2_w, 
-                wing_root_chord, wing_root_thick, wing_tip_chord, wing_tip_thick, 0, 1, 0]
-    
-    boxes.append(wing_box)
-    ops.append(BOX_OP)
-    
-    # --- ENGINES ---
-    num_engines = random.choice([1, 2])
-    eng_length = random.uniform(0.15, 0.25)
-    eng_width = random.uniform(0.04, 0.08)
-    eng_height = eng_width
-    eng_z_offset = - (eng_height / 2.0 + wing_root_thick / 2.0 + 0.01)
-    
-    # Engine 1 (Inboard)
-    t1 = random.uniform(0.3, 0.5)
-    y_e1 = y1_w + t1 * wing_span_half
-    x_e1_center = x1_w + t1 * sweep_dist - eng_length * 0.2
-    z_e1 = z1_w + t1 * dihedral_dist + eng_z_offset
-    
-    eng1_box = [x_e1_center - eng_length/2, y_e1, z_e1,
-                x_e1_center + eng_length/2, y_e1, z_e1,
-                eng_width, eng_height, eng_width, eng_height, 0, 0, 1]
-    
-    boxes.append(eng1_box)
-    ops.append(BOX_OP)
-    ops.append(ADJ_OP) # Attach Engine 1 to Wing
-    
-    if num_engines == 2:
-        # Engine 2 (Outboard)
-        t2 = random.uniform(0.6, 0.8)
-        y_e2 = y1_w + t2 * wing_span_half
-        x_e2_center = x1_w + t2 * sweep_dist - eng_length * 0.2
-        z_e2 = z1_w + t2 * dihedral_dist + eng_z_offset
+    if layout_type == 'conventional':
+        build_conventional(assembler)
+    elif layout_type == 'canard':
+        build_canard_layout(assembler)
+    else:
+        build_flying_wing(assembler)
         
-        eng2_box = [x_e2_center - eng_length/2, y_e2, z_e2,
-                    x_e2_center + eng_length/2, y_e2, z_e2,
-                    eng_width, eng_height, eng_width, eng_height, 0, 0, 1]
-        
-        boxes.append(eng2_box)
-        ops.append(BOX_OP)
-        ops.append(ADJ_OP) # Attach Engine 2 to (Wing+Engine 1)
-    
-    # Symmetry for main wings + engines
-    # Reflective symmetry across XZ plane: s = [1 (for reflective), ref_normal_x, ref_normal_y, ref_normal_z, ref_point_x, ref_point_y, ref_point_z, 0]
-    # In visualize_dataset.py, l3 = abs(s[0] - 1), so s[0] must be 1 for reflection.
-    # Normal is [0, 1, 0] (Y-axis), ref_point is [0, 0, 0]
-    sym_wing = [1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    syms.append(sym_wing)
-    ops.append(SYM_OP)
-    
-    # Attach Wings to Fuselage
-    ops.append(ADJ_OP)
-    
-    # --- 3. HORIZONTAL STABILIZER PAIR ---
-    # Right tail parameters
-    htail_pos_x = random.uniform(0.85 * L_fuse, 0.95 * L_fuse)
-    htail_span_half = random.uniform(0.15, 0.3)
-    htail_root_chord = random.uniform(0.08, 0.15)
-    htail_taper = random.uniform(0.3, 0.8)
-    htail_tip_chord = htail_root_chord * htail_taper
-    htail_thick = random.uniform(0.01, 0.02)
-    htail_sweep = random.uniform(0.0, 0.1)
-    
-    x1_h, y1_h, z1_h = htail_pos_x, W_fuse / 2.0, 0
-    x2_h, y2_h, z2_h = htail_pos_x + htail_sweep, y1_h + htail_span_half, 0 # no dihedral usually
-    
-    htail_box = [x1_h, y1_h, z1_h, x2_h, y2_h, z2_h,
-                 htail_root_chord, htail_thick, htail_tip_chord, htail_thick, 0, 1, 0]
-                 
-    boxes.append(htail_box)
-    ops.append(BOX_OP)
-    
-    # Symmetry for horizontal tail
-    sym_htail = [1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    syms.append(sym_htail)
-    ops.append(SYM_OP)
-    
-    # Attach Horizontal Tail
-    ops.append(ADJ_OP)
-    
-    # --- 4. VERTICAL STABILIZER ---
-    vtail_pos_x = htail_pos_x # Often aligned
-    vtail_span = random.uniform(0.15, 0.3) # z distance
-    vtail_root_chord = random.uniform(0.1, 0.2)
-    vtail_taper = random.uniform(0.3, 0.8)
-    vtail_tip_chord = vtail_root_chord * vtail_taper
-    vtail_thick = random.uniform(0.01, 0.02)
-    vtail_sweep = random.uniform(0.05, 0.15)
-    
-    x1_v, y1_v, z1_v = vtail_pos_x, 0, H_fuse / 2.0
-    x2_v, y2_v, z2_v = vtail_pos_x + vtail_sweep, 0, z1_v + vtail_span
-    
-    vtail_box = [x1_v, y1_v, z1_v, x2_v, y2_v, z2_v,
-                 vtail_root_chord, vtail_thick, vtail_tip_chord, vtail_thick, 0, 1, 0]
-                 
-    boxes.append(vtail_box)
-    ops.append(BOX_OP)
-    
-    # Attach Vertical Tail
-    ops.append(ADJ_OP)
-    
+    boxes, ops, syms = assembler.boxes, assembler.ops, assembler.syms
+
     # --- Isotropic Scaling per instance ---
     max_val = 0.0
     for box in boxes:
@@ -196,9 +267,9 @@ def main():
         max_ops_len = max(max_ops_len, len(o))
         max_syms_len = max(max_syms_len, len(s))
         
-    MAX_BOXES = max_boxes_len # 4
-    MAX_OPS = max_ops_len     # 9
-    MAX_SYMS = max_syms_len   # 2
+    MAX_BOXES = max_boxes_len
+    MAX_OPS = max_ops_len
+    MAX_SYMS = max_syms_len
     
     padded_boxes = []
     padded_ops = []

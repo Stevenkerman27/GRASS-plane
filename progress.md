@@ -3,6 +3,7 @@
 ## 1. 全局架构与设计规约 (Global Architecture & Design Conventions)
 
 - **单一来源配置**: 所有模型的超参数、GAN的权重参数等魔术变量必须统一集中维护在 `util.py` 中，禁止在业务逻辑代码中硬编码。
+- **组件化生成与拓扑组装 (Component-based Generation)**: 对于复杂的树形拓扑数据（如 OBB 树）生成，必须采用组件化工厂（Component Factories）与统一的装配器（如 `TreeAssembler`）架构，以隔离物理组件参数与后根遍历（Post-order traversal，`BOX`, `ADJ`, `SYM`）的栈操作复杂性，保证多布局（鸭翼、飞翼等）和变体组合拓扑的正确性。
 - **VAE-WGAN-GP 双阶段训练架构**:
   - 第一阶段 (Autoencoder): 通过 `grassmodel.py` 训练重构与 KL 散度损失。
   - 第二阶段 (GAN): 通过 `train_GAN.py` 复用第一阶段预训练权重，解码器直接作为 GAN 生成器，编码器由 `GANDiscriminator` 包装以输出线性标量作为 Critic 判别器。

@@ -14,7 +14,7 @@ def tryPlot():
     draw(ax, [0.4, 0.05, 0, 0.6, 0.5, 0.05, 0.2, 0.02, 0.1, 0.01], cmap(float(2)/7))
     plt.show()
 
-def draw(ax, p, color):
+def draw(ax, p, color, label=None):
     import numpy as np
     from numpy import linalg as LA
     import matplotlib.pyplot as plt
@@ -35,6 +35,13 @@ def draw(ax, p, color):
     L1, H1 = p[6], p[7]
     L2, H2 = p[8], p[9]
     
+    # Render label if provided (at the center of the box)
+    if label is not None:
+        center = (c1 + c2) / 2
+        ax.text(center[0], center[1], center[2], str(label), 
+                color='black', fontsize=12, fontweight='bold',
+                bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
+
     # The direction connecting the two opposite face centers (e.g., spanwise for wing)
     dir_span = c2 - c1
     span_len = LA.norm(dir_span)
@@ -107,9 +114,10 @@ def draw(ax, p, color):
     ax.plot([cornerpoints[2][0], cornerpoints[6][0]], [cornerpoints[2][1], cornerpoints[6][1]], [cornerpoints[2][2], cornerpoints[6][2]], c=color)
     ax.plot([cornerpoints[3][0], cornerpoints[7][0]], [cornerpoints[3][1], cornerpoints[7][1]], [cornerpoints[3][2], cornerpoints[7][2]], c=color)
 
-def showGenshapes(genshapes):
+def showGenshapes(genshapes, labels=None):
     for i in range(len(genshapes)):
         recover_boxes = genshapes[i]
+        curr_labels = labels[i] if labels is not None else None
 
         fig = plt.figure(i)
         cmap = plt.get_cmap('jet_r')
@@ -120,11 +128,12 @@ def showGenshapes(genshapes):
 
         for jj in range(len(recover_boxes)):
             p = recover_boxes[jj][:]
-            draw(ax, p, cmap(float(jj)/len(recover_boxes)))
+            label = curr_labels[jj] if curr_labels is not None else None
+            draw(ax, p, cmap(float(jj)/len(recover_boxes)), label=label)
 
         plt.show()
 
-def showGenshape(genshape):
+def showGenshape(genshape, labels=None):
     recover_boxes = genshape
 
     fig = plt.figure(0)
@@ -136,6 +145,7 @@ def showGenshape(genshape):
 
     for jj in range(len(recover_boxes)):
         p = recover_boxes[jj][:]
-        draw(ax, p, cmap(float(jj)/len(recover_boxes)))
+        label = labels[jj] if labels is not None else None
+        draw(ax, p, cmap(float(jj)/len(recover_boxes)), label=label)
 
     plt.show()

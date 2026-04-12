@@ -103,7 +103,12 @@ for epoch in range(config.epochs):
         total_loss = dec_fold.apply(decoder, [dec_fold_nodes, kld_fold_nodes])
         # the first dim of total_loss is for reconstruction and the second for KL divergence
         recon_loss = total_loss[0].sum() / len(batch)               # avg. reconstruction loss per example
-        kldiv_loss = total_loss[1].sum().mul(-kl_weight) / len(batch)    # avg. KL divergence loss per example
+        
+        kldiv_total = total_loss[1].sum().mul(-0.5)                 # total KL divergence (sum over dimensions and nodes)
+        avg_raw_kld = kldiv_total.item() / len(batch)               # raw average KL divergence for reporting
+        # Apply KL thresholding: loss = max(tolerance, KL)
+        kldiv_loss = torch.clamp(kldiv_total, min=config.kl_tolerance * len(batch)).mul(kl_weight) / len(batch)
+        
         total_loss = recon_loss + kldiv_loss
         # Do parameter optimization
         encoder_opt.zero_grad() #清空编码器和解码器中上一步残留的梯度
@@ -116,13 +121,13 @@ for epoch in range(config.epochs):
             print(log_template.format(strftime("%H:%M:%S",time.gmtime(time.time()-start)),
                 epoch, config.epochs, 1+batch_idx, len(train_iter),
                 100. * (1+batch_idx+len(train_iter)*epoch) / (len(train_iter)*config.epochs),
-                recon_loss.item(), kldiv_loss.item(), total_loss.item()))
+                recon_loss.item(), avg_raw_kld, total_loss.item()))
         # Plot losses
         if not config.no_plot:
             plot_total_loss[iter_id] = total_loss.item()
             plot_recon_loss[iter_id] = recon_loss.item()
-            plot_kldiv_loss[iter_id] = kldiv_loss.item()
-            max_loss = max(max_loss, total_loss.item(), recon_loss.item(), kldiv_loss.item())
+            plot_kldiv_loss[iter_id] = avg_raw_kld
+            max_loss = max(max_loss, total_loss.item(), recon_loss.item(), avg_raw_kld)
             dyn_plot.setxlim(0., (iter_id+1)*1.05)
             dyn_plot.setylim(0., max_loss*1.05)
             dyn_plot.update_plots(ydata={'Total_loss':plot_total_loss, 'Reconstruction_loss':plot_recon_loss, 'KL_divergence_loss':plot_kldiv_loss})
@@ -137,7 +142,7 @@ for epoch in range(config.epochs):
     # Save training log
     if config.save_log and (epoch+1) % config.save_log_every == 0 :
         fd_log = open('training_log.log', mode='a')
-        fd_log.write('\nepoch:{} recon_loss:{:.2f} kld_loss:{:.2f} total_loss:{:.2f}'.format(epoch+1, recon_loss.item(), kldiv_loss.item(), total_loss.item()))
+        fd_log.write('\nepoch:{} recon_loss:{:.2f} raw_kld:{:.2f} total_loss:{:.2f}'.format(epoch+1, recon_loss.item(), avg_raw_kld, total_loss.item()))
         fd_log.close()
 
 # Save the final models
