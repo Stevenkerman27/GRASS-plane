@@ -78,6 +78,7 @@ if not config.no_plot:
     
 for epoch in range(config.epochs):
     print(header)
+    kl_weight = config.kl_weight_target * (min(1.0, epoch / config.kl_anneal_epochs) if config.kl_anneal_epochs > 0 else 1.0)
     for batch_idx, batch in enumerate(train_iter):
         # Initialize torchfold for *encoding*
         enc_fold = FoldExt(cuda=config.cuda)
@@ -102,7 +103,7 @@ for epoch in range(config.epochs):
         total_loss = dec_fold.apply(decoder, [dec_fold_nodes, kld_fold_nodes])
         # the first dim of total_loss is for reconstruction and the second for KL divergence
         recon_loss = total_loss[0].sum() / len(batch)               # avg. reconstruction loss per example
-        kldiv_loss = total_loss[1].sum().mul(-0.05) / len(batch)    # avg. KL divergence loss per example
+        kldiv_loss = total_loss[1].sum().mul(-kl_weight) / len(batch)    # avg. KL divergence loss per example
         total_loss = recon_loss + kldiv_loss
         # Do parameter optimization
         encoder_opt.zero_grad() #清空编码器和解码器中上一步残留的梯度
