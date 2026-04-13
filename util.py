@@ -20,11 +20,10 @@ def get_args():
     parser.add_argument('--gan_batch_size', type=int, default=12, help='Batch size for GAN training')
 
     # VAE parameters
-    parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--kl_weight_target', type=float, default=0.03)
+    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--kl_weight_target', type=float, default=0.05)
     parser.add_argument('--kl_anneal_epochs', type=int, default=20)
-    parser.add_argument('--kl_tolerance', type=float, default=3)
-    parser.add_argument('--batch_size', type=int, default=12)
+    parser.add_argument('--batch_size', type=int, default=10)
     parser.add_argument('--show_log_every', type=int, default=3)
     parser.add_argument('--save_log', action='store_true', default=False)
     parser.add_argument('--save_log_every', type=int, default=3)

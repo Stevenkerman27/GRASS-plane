@@ -33,3 +33,7 @@ class DynamicPlot():
         self.yline[label].set_ydata(data)
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
+
+    def save(self, filename):
+        self.fig.savefig(filename)
+        print(f"Loss curve saved to {filename}")

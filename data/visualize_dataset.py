@@ -190,22 +190,6 @@ def print_assembly_steps(node, step=[1], next_id=[1]):
         step[0] += 1
         return f"{left_id}, {right_id}", f"Group({left_desc}+{right_desc})"
 
-def print_tree_structure(node, indent=""):
-    """Recursive function to print the tree hierarchy."""
-    if node.is_leaf():
-        label = get_box_label(node.box)
-        print(f"{indent}└── [BOX] {label}")
-    elif node.is_sym():
-        s_type = "Reflective" if abs(node.sym[0][0] - 1) < 0.1 else \
-                 "Translational" if abs(node.sym[0][0]) < 0.1 else \
-                 "Rotational" if abs(node.sym[0][0] + 1) < 0.1 else "Unknown"
-        print(f"{indent}└── [SYM] {s_type}")
-        print_tree_structure(node.left, indent + "    ")
-    elif node.is_adj():
-        print(f"{indent}└── [ADJ] Join")
-        print_tree_structure(node.left, indent + "    ├── ")
-        print_tree_structure(node.right, indent + "    └── ")
-
 def main():
     dataset_path = './data'
     print(f"Loading dataset from {dataset_path}...")
@@ -223,7 +207,7 @@ def main():
         print("No samples found in dataset.")
         return
 
-    num_to_show = min(5, total_samples)
+    num_to_show = min(10, total_samples)
     indices = random.sample(range(total_samples), num_to_show)
     
     print(f"Randomly selected {num_to_show} samples for visualization.")
@@ -232,9 +216,6 @@ def main():
         print("\n" + "="*65)
         print(f"[{i+1}/{num_to_show}] Visualizing sample index: {idx}")
         tree = dataset[idx]
-        
-        print("\n--- Tree Hierarchy ---")
-        print_tree_structure(tree.root)
         
         print("\n--- Assembly Sequence (Post-order) ---")
         # Initialize step and part counters for each sample

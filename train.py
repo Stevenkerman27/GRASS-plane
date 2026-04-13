@@ -106,8 +106,8 @@ for epoch in range(config.epochs):
         
         kldiv_total = total_loss[1].sum().mul(-0.5)                 # total KL divergence (sum over dimensions and nodes)
         avg_raw_kld = kldiv_total.item() / len(batch)               # raw average KL divergence for reporting
-        # Apply KL thresholding: loss = max(tolerance, KL)
-        kldiv_loss = torch.clamp(kldiv_total, min=config.kl_tolerance * len(batch)).mul(kl_weight) / len(batch)
+        # Apply KL weight and average over batch
+        kldiv_loss = kldiv_total.mul(kl_weight) / len(batch)
         
         total_loss = recon_loss + kldiv_loss
         # Do parameter optimization
@@ -150,3 +150,6 @@ print("Saving final models ...... ", end='', flush=True)
 torch.save(encoder, config.save_path+'//vae_encoder_model.pkl')
 torch.save(decoder, config.save_path+'//vae_decoder_model.pkl')
 print("DONE")
+
+if not config.no_plot:
+    dyn_plot.save(os.path.join(config.save_path, 'vae_loss_curve.png'))

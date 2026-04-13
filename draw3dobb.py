@@ -52,27 +52,49 @@ def draw(ax, p, color, label=None):
     else:
         dir_span_norm = dir_span / span_len
         
-    # The 'L' dimension is always parallel to the global XY plane if the span is horizontal.
-    # However, if the span is primarily vertical (like a vertical stabilizer), 'L' should be 
-    # parallel to the global XZ plane (roughly aligned with X). 
-    # We choose the reference vector based on the dominant axis of the span.
-    if abs(dir_span_norm[2]) > 0.707: # Z is dominant
-        # Use -Y so that crossing with +Z yields +X
-        ref_vec = np.array([0.0, -1.0, 0.0])
-    else:
-        ref_vec = np.array([0.0, 0.0, 1.0])
-    
-    dir_chord = np.cross(dir_span_norm, ref_vec)
-    chord_len = LA.norm(dir_chord)
-    
-    if chord_len < 1e-6:
-        dir_chord_norm = np.array([1.0, 0, 0])
-    else:
-        dir_chord_norm = dir_chord / chord_len
+    # Check if this component is a wing/tail.
+    is_wing = False
+    if len(p) >= 13:
+        cls_idx = np.argmax(p[10:13])
+        if cls_idx == 1:
+            is_wing = True
+    elif color == 'blue' or color == plt.get_cmap('jet_r')(float(2)/7): # Fallback for tryPlot 10D
+        is_wing = True
         
-    # The 'H' dimension (thickness) direction is orthogonal to both span and chord
-    dir_thick_norm = np.cross(dir_chord_norm, dir_span_norm)
-    dir_thick_norm = dir_thick_norm / LA.norm(dir_thick_norm)
+    if is_wing:
+        # For wings, force the chord to be parallel to the freestream (global X axis)
+        dir_chord_norm = np.array([1.0, 0.0, 0.0])
+        
+        # Thickness is orthogonal to freestream and span.
+        # If the wing is primarily horizontal (span is mainly in Y), thickness is Z.
+        # If the wing is primarily vertical (span is mainly in Z, like vertical tail), thickness is Y.
+        if abs(dir_span_norm[2]) > 0.707: # Z is dominant -> Vertical tail
+            dir_thick_norm = np.array([0.0, 1.0, 0.0]) # Thickness in Y
+        else: # Horizontal wing
+            dir_thick_norm = np.array([0.0, 0.0, 1.0]) # Thickness in Z
+    else:
+        # Standard OBB logic for Fuselage, Engines, etc.
+        # The 'L' dimension is always parallel to the global XY plane if the span is horizontal.
+        # However, if the span is primarily vertical (like a vertical stabilizer), 'L' should be 
+        # parallel to the global XZ plane (roughly aligned with X). 
+        # We choose the reference vector based on the dominant axis of the span.
+        if abs(dir_span_norm[2]) > 0.707: # Z is dominant
+            # Use -Y so that crossing with +Z yields +X
+            ref_vec = np.array([0.0, -1.0, 0.0])
+        else:
+            ref_vec = np.array([0.0, 0.0, 1.0])
+        
+        dir_chord = np.cross(dir_span_norm, ref_vec)
+        chord_len = LA.norm(dir_chord)
+        
+        if chord_len < 1e-6:
+            dir_chord_norm = np.array([1.0, 0, 0])
+        else:
+            dir_chord_norm = dir_chord / chord_len
+            
+        # The 'H' dimension (thickness) direction is orthogonal to both span and chord
+        dir_thick_norm = np.cross(dir_chord_norm, dir_span_norm)
+        dir_thick_norm = dir_thick_norm / LA.norm(dir_thick_norm)
     
     # Calculate corners for face 1
     d1_chord = 0.5 * L1 * dir_chord_norm

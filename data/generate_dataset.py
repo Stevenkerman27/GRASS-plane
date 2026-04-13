@@ -42,7 +42,15 @@ def get_engine_dims():
 def build_engine(x, y, z, length, width):
     return [x - length/2, y, z, x + length/2, y, z, width, width, width, width, 0, 0, 1]
 
-def build_wing(x_root, y_root, z_root, span_half, root_chord, taper, dihedral, sweep):
+def build_wing(x_root, y_root, z_root, span_half, type):
+    if type == "lifting":
+        AR = random.uniform(0.9, 8)
+    else:
+        AR = random.uniform(0.8, 2.5)
+    taper = random.uniform(0.3, 1.0)
+    root_chord = span_half/AR*2/(1+taper)
+    dihedral = random.uniform(-span_half*0.1, span_half*0.1)
+    sweep = random.uniform(0, root_chord * 1)
     tip_chord = root_chord * taper
     thick = random.uniform(0.02, 0.05)
     tip_thick = thick * random.uniform(0.3, 0.9)
@@ -90,7 +98,7 @@ def build_canard_layout(assembler):
     
     # Canard (Forewing)
     canard_span = random.uniform(0.15, 0.3)
-    canard_box = build_wing(0.1 * L_fuse, W_fuse/2, 0, canard_span, 0.12, 0.6, 0.05, 0.05)
+    canard_box = build_wing(0.1 * L_fuse, W_fuse/2, 0, canard_span, "stab")
     assembler.push_box(canard_box)
     assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     assembler.apply_adj() # Connect Canard to Fuselage
@@ -98,7 +106,7 @@ def build_canard_layout(assembler):
     # Main Wing (Aft)
     wing_span = random.uniform(0.5, 0.9)
     wing_pos_x = random.uniform(0.6, 0.8) * L_fuse
-    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, 0.3, 0.4, 0.05, 0.3)
+    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, "lifting")
     assembler.push_box(wing_box)
     
     # Engine logic for Canard
@@ -117,22 +125,24 @@ def build_canard_layout(assembler):
         emit_engine_group(assembler, config, 0.95 * L_fuse, W_fuse/2 + 0.05, 0)
         assembler.apply_adj() # Connect Rear Engines to Fuselage
 
-    # V-Tail
+    # 垂尾
     v_span = random.uniform(0.15, 0.3)
-    vtail_box = build_wing(0.95 * L_fuse, 0, H_fuse/2, v_span, 0.15, 0.5, 0, 0.1)
+    vtail_box = build_wing(0.95 * L_fuse, 0, H_fuse/2, v_span, "stab")
     vtail_box[1] = 0; vtail_box[2] = H_fuse/2; vtail_box[4] = 0; vtail_box[5] = H_fuse/2 + v_span
     assembler.push_box(vtail_box)
-    assembler.apply_adj() # Connect V-Tail to Fuselage
+    assembler.apply_adj() # Connect 垂尾 to Fuselage
 
 def build_flying_wing(assembler):
     L = random.uniform(0.3, 0.8)
-    H = random.uniform(0.2, 0.4)
-    W = random.uniform(0.2, 0.4)
+    thinness = random.uniform(0.1, 0.8)
+    H = L*thinness
+    width = random.uniform(0.8, 1.2)
+    W = H*width
     fuse_box = [0, 0, 0, L, 0, 0, W, H, W, H, 1, 0, 0]
     assembler.push_box(fuse_box)
     
     wing_span = random.uniform(0.8, 1.4)
-    wing_box = build_wing(0.1 * L, W/2, 0, wing_span, L*0.9, 0.2, 0.05, 0.7)
+    wing_box = build_wing(random.uniform(0.3, 0.8) * L, W/2, 0, wing_span, "lifting")
     assembler.push_box(wing_box)
     
     eng_loc = random.choice(['wing', 'rear'])
@@ -157,7 +167,7 @@ def build_conventional(assembler):
     # Main Wing
     wing_span = random.uniform(0.6, 1.2)
     wing_pos_x = random.uniform(0.25, 0.45) * L_fuse
-    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, 0.35, 0.5, 0.05, 0.2)
+    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, "lifting")
     assembler.push_box(wing_box)
 
     eng_loc = random.choice(['nose', 'wing', 'rear'])
@@ -185,20 +195,21 @@ def build_conventional(assembler):
     tail_type = random.choice(['T', 'conventional'])
     v_span = random.uniform(0.25, 0.4)
     if tail_type == 'T':
-        # H-Tail is moved further aft (0.95 vs 0.9) to align with v-tail tip
-        htail_box = build_wing(L_fuse, 0, H_fuse/2 + v_span, random.uniform(0.2, 0.45), 0.12, 0.6, 0, 0.1)
+        vt_pos =  random.uniform(0.9, 1.0)*L_fuse
+        ht_span = random.uniform(0.2, 0.45)
+        htail_box = build_wing(vt_pos+ht_span*random.uniform(0, 0.3), 0, H_fuse/2 + v_span, ht_span, "stab")
         assembler.push_box(htail_box)
         assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        vtail_box = build_wing(0.9 * L_fuse, 0, H_fuse/2, v_span, 0.2, 0.6, 0, 0.15)
+        vtail_box = build_wing(vt_pos, 0, H_fuse/2, v_span,  "stab")
         vtail_box[1] = 0; vtail_box[2] = H_fuse/2; vtail_box[4] = 0; vtail_box[5] = H_fuse/2 + v_span
         assembler.push_box(vtail_box)
         assembler.apply_adj()
     else:
-        vtail_box = build_wing(0.92 * L_fuse, 0, H_fuse/2, v_span, 0.2, 0.6, 0, 0.15)
+        vtail_box = build_wing(0.92 * L_fuse, 0, H_fuse/2, v_span, "stab")
         vtail_box[1] = 0; vtail_box[2] = H_fuse/2; vtail_box[4] = 0; vtail_box[5] = H_fuse/2 + v_span
         assembler.push_box(vtail_box)
         assembler.apply_adj()
-        htail_box = build_wing(0.88 * L_fuse, W_fuse/2, 0, random.uniform(0.2, 0.4), 0.15, 0.6, 0, 0.1)
+        htail_box = build_wing(0.88 * L_fuse, W_fuse/2, 0, random.uniform(0.2, 0.4), "stab")
         assembler.push_box(htail_box)
         assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     
