@@ -218,60 +218,56 @@ class GRASSDecoder(nn.Module):
     def nodeClassifier(self, feature):
         return self.node_classifier(feature)
 
-    def boxLossEstimator(self, box_feature, gt_box_feature, lambda_cls=1.0):
+    def boxLossEstimator(self, box_feature, gt_box_feature):
         import torch
         losses = []
         for b, gt in zip(box_feature, gt_box_feature):
-            geom_l = self.mseLoss(b[:10], gt[:10]).mul(0.4)
-            
+            geom_l = self.mseLoss(b[:10], gt[:10])
+
             # creLoss expects input (1, C) and target (1)
             pred_logits = b[10:].unsqueeze(0)
             target_class = torch.argmax(gt[10:]).unsqueeze(0)
             cls_l = self.creLoss(pred_logits, target_class)
-            
-            losses.append(geom_l + lambda_cls * cls_l)
-            
-        return torch.stack(losses, 0)
 
+            losses.append(torch.stack([geom_l, cls_l]))
+
+        return torch.stack(losses, 0)
     def symLossEstimator(self, sym_param, gt_sym_param):
-        return torch.stack([self.mseLoss(s, gt).mul(0.5) for s, gt in zip(sym_param, gt_sym_param)], 0)
+        import torch
+        return torch.stack([self.mseLoss(s, gt) for s, gt in zip(sym_param, gt_sym_param)], 0)
 
     def classifyLossEstimator(self, label_vector, gt_label_vector):
-        return torch.stack([self.creLoss(l.unsqueeze(0), gt.unsqueeze(0)).mul(0.2) for l, gt in zip(label_vector, gt_label_vector)], 0) #交叉熵
-
-    def vectorAdder(self, v1, v2):
-        return v1.add_(v2)
+        import torch
+        return torch.stack([self.creLoss(l.unsqueeze(0), gt.unsqueeze(0)) for l, gt in zip(label_vector, gt_label_vector)], 0)
 
 
 def decode_structure_fold(fold, feature, tree):
-    
+    box_losses = []
+    sym_losses = []
+    cat_losses = []
+
     def decode_node_box(node, feature):
         if node.is_leaf():
             box = fold.add('boxDecoder', feature)
-            recon_loss = fold.add('boxLossEstimator', box, node.box)
+            box_losses.append(fold.add('boxLossEstimator', box, node.box))
             label = fold.add('nodeClassifier', feature)
-            label_loss = fold.add('classifyLossEstimator', label, node.label)
-            return fold.add('vectorAdder', recon_loss, label_loss)
+            cat_losses.append(fold.add('classifyLossEstimator', label, node.label))
         elif node.is_adj():
             left, right = fold.add('adjDecoder', feature).split(2)
-            left_loss = decode_node_box(node.left, left)
-            right_loss = decode_node_box(node.right, right)
+            decode_node_box(node.left, left)
+            decode_node_box(node.right, right)
             label = fold.add('nodeClassifier', feature)
-            label_loss = fold.add('classifyLossEstimator', label, node.label)
-            loss = fold.add('vectorAdder', left_loss, right_loss)
-            return fold.add('vectorAdder', loss, label_loss)
+            cat_losses.append(fold.add('classifyLossEstimator', label, node.label))
         elif node.is_sym():
             sym_gen, sym_param = fold.add('symDecoder', feature).split(2)
-            sym_param_loss = fold.add('symLossEstimator', sym_param, node.sym)
-            sym_gen_loss = decode_node_box(node.left, sym_gen)
+            sym_losses.append(fold.add('symLossEstimator', sym_param, node.sym))
+            decode_node_box(node.left, sym_gen)
             label = fold.add('nodeClassifier', feature)
-            label_loss = fold.add('classifyLossEstimator', label, node.label)
-            loss = fold.add('vectorAdder', sym_gen_loss, sym_param_loss)
-            return fold.add('vectorAdder', loss, label_loss)
+            cat_losses.append(fold.add('classifyLossEstimator', label, node.label))
 
     feature = fold.add('sampleDecoder', feature)
-    loss = decode_node_box(tree.root, feature)
-    return loss
+    decode_node_box(tree.root, feature)
+    return box_losses, sym_losses, cat_losses
 
 
 #########################################################################################

@@ -70,12 +70,18 @@ total_iter = config.epochs * len(train_iter)
 if not config.no_plot:
     plot_x = [x for x in range(total_iter)]
     plot_total_loss = [None for x in range(total_iter)]
-    plot_recon_loss = [None for x in range(total_iter)]
+    plot_geom_loss = [None for x in range(total_iter)]
+    plot_cls_loss = [None for x in range(total_iter)]
+    plot_sym_loss = [None for x in range(total_iter)]
+    plot_cat_loss = [None for x in range(total_iter)]
     plot_kldiv_loss = [None for x in range(total_iter)]
-    dyn_plot = DynamicPlot(title='Training loss over iterations (GRASS)', xdata=plot_x, ydata={'Total_loss':plot_total_loss, 'Reconstruction_loss':plot_recon_loss, 'KL_divergence_loss':plot_kldiv_loss})
+    dyn_plot = DynamicPlot(title='Training loss over iterations (GRASS)', xdata=plot_x, ydata={'Total_loss':plot_total_loss, 'Geom_loss':plot_geom_loss, 'Cls_loss':plot_cls_loss, 'Sym_loss':plot_sym_loss, 'Cat_loss':plot_cat_loss, 'KLD_loss':plot_kldiv_loss})
     iter_id = 0
     max_loss = 0
     
+header = '     Time    Epoch     Iteration    Progress(%)  GeomLoss   ClsLoss   SymLoss   CatLoss  KLDLoss  TotalLoss'
+log_template = ' '.join('{:>9s},{:>5.0f}/{:<5.0f},{:>5.0f}/{:<5.0f},{:>9.1f}%,{:>8.2f},{:>8.2f},{:>8.2f},{:>8.2f},{:>8.2f},{:>10.2f}'.split(','))
+
 for epoch in range(config.epochs):
     print(header)
     kl_weight = config.kl_weight_target * (min(1.0, epoch / config.kl_anneal_epochs) if config.kl_anneal_epochs > 0 else 1.0)
@@ -93,44 +99,89 @@ for epoch in range(config.epochs):
         # Initialize torchfold for *decoding*
         dec_fold = FoldExt(cuda=config.cuda)
         # Collect computation nodes recursively from decoding process
-        dec_fold_nodes = []
+        box_nodes = []
+        sym_nodes = []
+        cat_nodes = []
         kld_fold_nodes = []
         for example, fnode in zip(batch, enc_fold_nodes):
             root_code, kl_div = torch.chunk(fnode, 2, 1)
-            dec_fold_nodes.append(grassmodel.decode_structure_fold(dec_fold, root_code, example))
+            b_nodes, s_nodes, c_nodes = grassmodel.decode_structure_fold(dec_fold, root_code, example)
+            box_nodes.extend(b_nodes)
+            sym_nodes.extend(s_nodes)
+            cat_nodes.extend(c_nodes)
             kld_fold_nodes.append(kl_div)
-        # Apply the computations on the decoder model
-        total_loss = dec_fold.apply(decoder, [dec_fold_nodes, kld_fold_nodes])
-        # the first dim of total_loss is for reconstruction and the second for KL divergence
-        recon_loss = total_loss[0].sum() / len(batch)               # avg. reconstruction loss per example
+            
+        apply_lists = []
+        if box_nodes: apply_lists.append(box_nodes)
+        if sym_nodes: apply_lists.append(sym_nodes)
+        if cat_nodes: apply_lists.append(cat_nodes)
+        if kld_fold_nodes: apply_lists.append(kld_fold_nodes)
         
-        kldiv_total = total_loss[1].sum().mul(-0.5)                 # total KL divergence (sum over dimensions and nodes)
-        avg_raw_kld = kldiv_total.item() / len(batch)               # raw average KL divergence for reporting
-        # Apply KL weight and average over batch
-        kldiv_loss = kldiv_total.mul(kl_weight) / len(batch)
+        apply_res = dec_fold.apply(decoder, apply_lists)
         
-        total_loss = recon_loss + kldiv_loss
+        # Unpack results safely
+        res_idx = 0
+        device = torch.cuda.current_device() if config.cuda else 'cpu'
+        zero_tensor = torch.tensor(0.0, device=device)
+        
+        if box_nodes:
+            box_loss_raw = apply_res[res_idx].sum(dim=0) / len(batch)
+            geom_loss = box_loss_raw[0]
+            cls_loss = box_loss_raw[1]
+            res_idx += 1
+        else:
+            geom_loss, cls_loss = zero_tensor, zero_tensor
+            
+        if sym_nodes:
+            sym_loss = apply_res[res_idx].sum() / len(batch)
+            res_idx += 1
+        else:
+            sym_loss = zero_tensor
+            
+        if cat_nodes:
+            cat_loss = apply_res[res_idx].sum() / len(batch)
+            res_idx += 1
+        else:
+            cat_loss = zero_tensor
+            
+        if kld_fold_nodes:
+            kldiv_total = apply_res[res_idx].sum().mul(-0.5)
+            avg_raw_kld = kldiv_total.item() / len(batch)
+            kldiv_loss = kldiv_total.mul(kl_weight) / len(batch)
+        else:
+            avg_raw_kld = 0.0
+            kldiv_loss = zero_tensor
+            
+        total_loss = (config.lambda_geom * geom_loss + 
+                      config.lambda_cls * cls_loss + 
+                      config.lambda_sym * sym_loss + 
+                      config.lambda_cat * cat_loss + 
+                      kldiv_loss)
+
         # Do parameter optimization
-        encoder_opt.zero_grad() #清空编码器和解码器中上一步残留的梯度
+        encoder_opt.zero_grad() 
         decoder_opt.zero_grad()
-        total_loss.backward()#反向求导
-        encoder_opt.step() #更新权重
+        total_loss.backward()
+        encoder_opt.step() 
         decoder_opt.step()
         # Report statistics
         if batch_idx % config.show_log_every == 0:
-            print(log_template.format(strftime("%H:%M:%S",time.gmtime(time.time()-start)),
-                epoch, config.epochs, 1+batch_idx, len(train_iter),
+            print(log_template.format(strftime("%H:%M:%S", time.gmtime(time.time()-start)),
+                epoch+1, config.epochs, 1+batch_idx, len(train_iter),
                 100. * (1+batch_idx+len(train_iter)*epoch) / (len(train_iter)*config.epochs),
-                recon_loss.item(), avg_raw_kld, total_loss.item()))
+                geom_loss.item(), cls_loss.item(), sym_loss.item(), cat_loss.item(), avg_raw_kld, total_loss.item()))
         # Plot losses
         if not config.no_plot:
             plot_total_loss[iter_id] = total_loss.item()
-            plot_recon_loss[iter_id] = recon_loss.item()
+            plot_geom_loss[iter_id] = geom_loss.item()
+            plot_cls_loss[iter_id] = cls_loss.item()
+            plot_sym_loss[iter_id] = sym_loss.item()
+            plot_cat_loss[iter_id] = cat_loss.item()
             plot_kldiv_loss[iter_id] = avg_raw_kld
-            max_loss = max(max_loss, total_loss.item(), recon_loss.item(), avg_raw_kld)
+            max_loss = max(max_loss, total_loss.item(), geom_loss.item(), cls_loss.item(), sym_loss.item(), cat_loss.item(), avg_raw_kld)
             dyn_plot.setxlim(0., (iter_id+1)*1.05)
             dyn_plot.setylim(0., max_loss*1.05)
-            dyn_plot.update_plots(ydata={'Total_loss':plot_total_loss, 'Reconstruction_loss':plot_recon_loss, 'KL_divergence_loss':plot_kldiv_loss})
+            dyn_plot.update_plots(ydata={'Total_loss':plot_total_loss, 'Geom_loss':plot_geom_loss, 'Cls_loss':plot_cls_loss, 'Sym_loss':plot_sym_loss, 'Cat_loss':plot_cat_loss, 'KLD_loss':plot_kldiv_loss})
             iter_id += 1
 
     # Save snapshots of the models being trained
@@ -142,7 +193,8 @@ for epoch in range(config.epochs):
     # Save training log
     if config.save_log and (epoch+1) % config.save_log_every == 0 :
         fd_log = open('training_log.log', mode='a')
-        fd_log.write('\nepoch:{} recon_loss:{:.2f} raw_kld:{:.2f} total_loss:{:.2f}'.format(epoch+1, recon_loss.item(), avg_raw_kld, total_loss.item()))
+        fd_log.write('\nepoch:{} geom:{:.4f} cls:{:.4f} sym:{:.4f} cat:{:.4f} raw_kld:{:.4f} total:{:.4f}'.format(epoch+1, geom_loss.item(), cls_loss.item(), sym_loss.item(), cat_loss.item(), avg_raw_kld, total_loss.item()))
+        fd_log.flush()
         fd_log.close()
 
 # Save the final models
