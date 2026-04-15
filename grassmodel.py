@@ -92,8 +92,12 @@ class GRASSEncoder(nn.Module):
     def sampleEncoder(self, feature):
         return self.sample_encoder(feature)
 
-def encode_structure_fold(fold, tree):
-
+def encode_structure_fold(fold, tree, use_sampler=True):
+    """
+    Encodes a structure into a feature vector.
+    If use_sampler is True (default), it includes the final Sampler step (mu/logvar).
+    If use_sampler is False, it returns the raw root feature, used by the Discriminator.
+    """
     def encode_node(node):
         if node.is_leaf():
             return fold.add('boxEncoder', node.box) #fold.add只录制，不执行
@@ -107,7 +111,10 @@ def encode_structure_fold(fold, tree):
             return fold.add('symEncoder', feature, sym)
 
     encoding = encode_node(tree.root) #递归的合并根节点
-    return fold.add('sampleEncoder', encoding)
+    if use_sampler:
+        return fold.add('sampleEncoder', encoding)
+    else:
+        return encoding
 
 #########################################################################################
 ## Decoder

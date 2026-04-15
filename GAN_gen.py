@@ -12,7 +12,10 @@ def main():
 
     # Load config for feature_size and save_path
     config = util.get_args()
-    model_path = os.path.join(config.save_path, 'gan_decoder_model.pkl')
+    
+    # Use resume_snapshot if provided, otherwise default to gan_decoder_model.pkl
+    model_filename = config.resume_snapshot if config.resume_snapshot else 'gan_decoder_model.pkl'
+    model_path = os.path.join(config.save_path, model_filename)
     
     print(f"Loading decoder from {model_path}...")
     # Load decoder
@@ -46,11 +49,16 @@ def main():
                 
                 # Check for degenerate boxes (e.g., all zeros or NaNs)
                 box_data = torch.cat(boxes, 0)
-                if torch.isnan(box_data).any():
+                
+                # Denormalize from [-1, 1] back to [0, 1] for visualization
+                # This is CRITICAL because the decoder outputs are tanh-activated
+                box_data_denorm = (box_data + 1.0) / 2.0
+                
+                if torch.isnan(box_data_denorm).any():
                     print("  Warning: Generated boxes contain NaNs!")
                 
                 # Visualize
-                showGenshape(box_data.detach().cpu().numpy())
+                showGenshape(box_data_denorm.detach().cpu().numpy())
             else:
                 print("  Warning: No boxes generated for this sample. The tree might have collapsed.")
 

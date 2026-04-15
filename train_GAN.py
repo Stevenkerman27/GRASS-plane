@@ -21,10 +21,12 @@ class GANDiscriminator(nn.Module):
         super(GANDiscriminator, self).__init__()
         # Discriminator has its own RvNN encoder
         self.encoder = grassmodel.GRASSEncoder(config)
-        # Map from feature_size to hidden_size, then to 1 (linear output for WGAN-GP)
+        # 3-layer scorer (2 hidden layers) matching MATLAB's Wdc1, Wdc2, Wscore
         self.fc = nn.Sequential(
             nn.Linear(config.feature_size, config.hidden_size),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.Tanh(),
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.Tanh(),
             nn.Linear(config.hidden_size, 1)
         )
 
@@ -35,13 +37,12 @@ class GANDiscriminator(nn.Module):
         """Encodes a batch of structures using the discriminator's encoder and extracts root features."""
         nodes = []
         for example in batch:
-            nodes.append(grassmodel.encode_structure_fold(fold, example))
+            # Match MATLAB: encode directly to root feature without Sampler
+            nodes.append(grassmodel.encode_structure_fold(fold, example, use_sampler=False))
         
         # Apply the fold to get encoded features
         encoded = fold.apply(self.encoder, [nodes])
-        # Root features are the first half of the Sampler output (mu/z)
-        root_features, _ = torch.chunk(encoded[0], 2, 1)
-        return root_features
+        return encoded[0]
 
 def my_collate(batch):
     return batch
@@ -110,16 +111,35 @@ def compute_gradient_penalty(discriminator, real_features, fake_features, config
     return gradient_penalty
 
 class GANWrapper(nn.Module):
-    """Wrapper to allow TorchFold to call methods from both G and D.Encoder in one pass."""
-    def __init__(self, generator, discriminator_encoder):
+    """Wrapper to allow TorchFold to call methods from both G and D.Encoder in one pass.
+    If detach_gen is True, generator outputs are detached to prevent G updates during D step,
+    while still allowing D's encoder to receive gradients.
+    """
+    def __init__(self, generator, discriminator_encoder, detach_gen=False):
         super(GANWrapper, self).__init__()
         self.generator = generator
         self.discriminator_encoder = discriminator_encoder
+        self.detach_gen = detach_gen
         
-    def boxDecoder(self, f): return self.generator.boxDecoder(f)
-    def adjDecoder(self, f): return self.generator.adjDecoder(f)
-    def symDecoder(self, f): return self.generator.symDecoder(f)
-    def sampleDecoder(self, f): return self.generator.sampleDecoder(f)
+    def boxDecoder(self, f): 
+        res = self.generator.boxDecoder(f)
+        return res.detach() if self.detach_gen else res
+        
+    def adjDecoder(self, f): 
+        res = self.generator.adjDecoder(f)
+        if self.detach_gen:
+            return res[0].detach(), res[1].detach()
+        return res
+        
+    def symDecoder(self, f): 
+        res = self.generator.symDecoder(f)
+        if self.detach_gen:
+            return res[0].detach(), res[1].detach()
+        return res
+        
+    def sampleDecoder(self, f): 
+        res = self.generator.sampleDecoder(f)
+        return res.detach() if self.detach_gen else res
     
     def boxEncoder(self, b): return self.discriminator_encoder.boxEncoder(b)
     def adjEncoder(self, l, r): return self.discriminator_encoder.adjEncoder(l, r)
@@ -130,15 +150,15 @@ def generate_and_encode_fake(fold, wrapper, batch, z_p):
     """Recursively generates a structure using G and then encodes it using D.Encoder."""
     def recurse(node, feature):
         if node.is_leaf():
-            # G: Gen Box -> D: Encode Box
+            # G: Gen Box -> (Optional Detach) -> D: Encode Box
             gen_box = fold.add('boxDecoder', feature)
             return fold.add('boxEncoder', gen_box)
         elif node.is_adj():
-            # G: Split -> Recurse -> D: Merge
+            # G: Split -> (Optional Detach) -> Recurse -> D: Merge
             l_f, r_f = fold.add('adjDecoder', feature).split(2)
             return fold.add('adjEncoder', recurse(node.left, l_f), recurse(node.right, r_f))
         elif node.is_sym():
-            # G: Split Sym -> Recurse -> D: Merge Sym
+            # G: Split Sym -> (Optional Detach) -> Recurse -> D: Merge Sym
             child_f, sym_p = fold.add('symDecoder', feature).split(2)
             return fold.add('symEncoder', recurse(node.left, child_f), sym_p)
 
@@ -148,15 +168,13 @@ def generate_and_encode_fake(fold, wrapper, batch, z_p):
         root_f = fold.add('sampleDecoder', z_p[i:i+1])
         # Structural recursive path
         res = recurse(example.root, root_f)
-        # D: Final encoding stage (Sampler)
-        encoded_root_nodes.append(fold.add('sampleEncoder', res))
+        # D: Final encoding stage
+        encoded_root_nodes.append(res)
         
     results = fold.apply(wrapper, [encoded_root_nodes])
-    # Extract root features z for WGAN scoring
-    fake_features, _ = torch.chunk(results[0], 2, 1)
-    return fake_features
+    return results[0]
 
-def train_discriminator_step(batch, discriminator, decoder, d_opt, config):
+def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, config):
     d_opt.zero_grad()
     
     # 1. Real path: Real structure -> D.Encoder -> D.FC
@@ -164,17 +182,35 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, config):
     real_features = discriminator.get_root_features(real_fold, batch)
     
     # 2. Fake path: Noise z -> G (decoder) -> Object -> D.Encoder -> D.FC
-    z_p = torch.randn(len(batch), config.feature_size)
+    K = config.gan_k_candidates
+    batch_size = len(batch)
+    z_p = torch.randn(batch_size, config.feature_size)
     if config.cuda:
         z_p = z_p.cuda()
     
-    # We use GANWrapper to run G and D.Encoder together in one Fold pass
-    wrapper = GANWrapper(decoder, discriminator.encoder)
+    all_candidate_trees = []
+    for i in range(batch_size):
+        random_indices = torch.randint(0, len(grass_data), (K,))
+        for idx in random_indices:
+            all_candidate_trees.append(grass_data[idx])
+            
+    z_p_expanded = z_p.repeat_interleave(K, dim=0)
+    
+    # Use wrapper with detach_gen=True to block gradients to G but allow them to D.Encoder
+    wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=True)
     fake_fold = FoldExt(cuda=config.cuda)
     
-    # During Discriminator update, we detach the fake features 
-    # to stop gradients from flowing back to the Generator
-    fake_features = generate_and_encode_fake(fake_fold, wrapper, batch, z_p).detach()
+    # Do NOT detach here; let gradients flow to D.Encoder
+    fake_features_all = generate_and_encode_fake(fake_fold, wrapper, all_candidate_trees, z_p_expanded)
+    
+    # Score all candidates to find the best ones
+    with torch.no_grad():
+        scores_all = discriminator(fake_features_all)
+        scores_reshaped = scores_all.view(batch_size, K)
+        best_indices = torch.argmax(scores_reshaped, dim=1)
+        
+    gather_indices = best_indices + torch.arange(0, batch_size, device=scores_all.device) * K
+    fake_features = fake_features_all[gather_indices]
         
     d_real_out = discriminator(real_features)
     d_fake_out = discriminator(fake_features)
@@ -182,8 +218,8 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, config):
     d_real = d_real_out.mean()
     d_fake = d_fake_out.mean()
     
-    # GP calculation
-    gp = compute_gradient_penalty(discriminator, real_features.detach(), fake_features, config)
+    # GP calculation (detach features to only compute GP on Scorer/FC part)
+    gp = compute_gradient_penalty(discriminator, real_features.detach(), fake_features.detach(), config)
     
     d_loss = d_fake - d_real + config.lambda_gp * gp
     d_loss.backward()
@@ -191,21 +227,38 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, config):
     
     return d_loss.item(), d_real.item(), d_fake.item(), gp.item()
 
-def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, config):
+def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, grass_data, config):
     g_opt.zero_grad()
     
-    # 1. Adversarial Loss (Structural Path)
-    # G generates structure -> D.Encoder encodes it -> D.FC scores it
-    z_p = torch.randn(len(batch), config.feature_size)
+    # Adversarial Loss: No detach, we want gradients for G
+    K = config.gan_k_candidates
+    batch_size = len(batch)
+    z_p = torch.randn(batch_size, config.feature_size)
     if config.cuda:
         z_p = z_p.cuda()
         
-    wrapper = GANWrapper(decoder, discriminator.encoder)
+    all_candidate_trees = []
+    for i in range(batch_size):
+        random_indices = torch.randint(0, len(grass_data), (K,))
+        for idx in random_indices:
+            all_candidate_trees.append(grass_data[idx])
+    
+    z_p_expanded = z_p.repeat_interleave(K, dim=0)
+    # G step: detach_gen=False, gradients flow through everything
+    wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=False)
     adv_fold = FoldExt(cuda=config.cuda)
     
-    # We do NOT detach here because we want gradients to flow through D.Encoder back to G
-    fake_features = generate_and_encode_fake(adv_fold, wrapper, batch, z_p)
-    g_adv_loss = -discriminator(fake_features).mean()
+    fake_features_all = generate_and_encode_fake(adv_fold, wrapper, all_candidate_trees, z_p_expanded)
+    
+    with torch.no_grad():
+        scores_all = discriminator(fake_features_all)
+        scores_reshaped = scores_all.view(batch_size, K)
+        best_indices = torch.argmax(scores_reshaped, dim=1)
+        
+    gather_indices = best_indices + torch.arange(0, batch_size, device=scores_all.device) * K
+    best_fake_features = fake_features_all[gather_indices]
+    
+    g_adv_loss = -discriminator(best_fake_features).mean()
     
     # 2. VAE Loss (Reconstruction path using vae_encoder)
     enc_fold = FoldExt(cuda=config.cuda)
@@ -289,9 +342,9 @@ def run_lr_range_test(config, dataloader, discriminator, vae_encoder, decoder):
         current_lr = optimizer_D.param_groups[0]['lr']
         
         for _ in range(config.n_critic):
-            d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, optimizer_D, config)
+            d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, optimizer_D, dataloader.dataset, config)
         
-        g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, optimizer_G, config)
+        g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, optimizer_G, dataloader.dataset, config)
 
         w_dist = d_real - d_fake
         
@@ -370,6 +423,7 @@ def run_lr_range_test(config, dataloader, discriminator, vae_encoder, decoder):
 
 def main():
     config, discriminator, vae_encoder, decoder, train_iter, d_opt, g_opt = setup_training()
+    grass_data = train_iter.dataset
     
     final_lr = run_lr_range_test(config, train_iter, discriminator, vae_encoder, decoder)
     config.gan_lr = final_lr
@@ -408,10 +462,10 @@ def main():
         for batch_idx, batch in enumerate(train_iter):
             # 1. Update Discriminator n_critic times
             for _ in range(config.n_critic):
-                d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, config)
+                d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, config)
             
             # 2. Update Generator once
-            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, config)
+            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, grass_data, config)
             
             w_dist = d_real - d_fake
             
