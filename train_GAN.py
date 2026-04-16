@@ -141,14 +141,28 @@ class GANWrapper(nn.Module):
         res = self.generator.sampleDecoder(f)
         return res.detach() if self.detach_gen else res
     
+    def nodeClassifier(self, f): 
+        res = self.generator.nodeClassifier(f)
+        return res.detach() if self.detach_gen else res
+        
+    def classifyLossEstimator(self, label_vector, gt_label_vector):
+        return self.generator.classifyLossEstimator(label_vector, gt_label_vector)
+    
     def boxEncoder(self, b): return self.discriminator_encoder.boxEncoder(b)
     def adjEncoder(self, l, r): return self.discriminator_encoder.adjEncoder(l, r)
     def symEncoder(self, f, s): return self.discriminator_encoder.symEncoder(f, s)
     def sampleEncoder(self, f): return self.discriminator_encoder.sampleEncoder(f)
 
 def generate_and_encode_fake(fold, wrapper, batch, z_p):
-    """Recursively generates a structure using G and then encodes it using D.Encoder."""
+    """Recursively generates a structure using G and then encodes it using D.Encoder.
+    Also collects classification losses for structural integrity.
+    """
+    cat_losses = []
     def recurse(node, feature):
+        # Ensure the generator maintains structural knowledge even in GAN path
+        label_logits = fold.add('nodeClassifier', feature)
+        cat_losses.append(fold.add('classifyLossEstimator', label_logits, node.label))
+        
         if node.is_leaf():
             # G: Gen Box -> (Optional Detach) -> D: Encode Box
             gen_box = fold.add('boxDecoder', feature)
@@ -171,8 +185,8 @@ def generate_and_encode_fake(fold, wrapper, batch, z_p):
         # D: Final encoding stage
         encoded_root_nodes.append(res)
         
-    results = fold.apply(wrapper, [encoded_root_nodes])
-    return results[0]
+    results = fold.apply(wrapper, [encoded_root_nodes, cat_losses])
+    return results[0], results[1]
 
 def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, config):
     d_opt.zero_grad()
@@ -200,8 +214,8 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, c
     wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=True)
     fake_fold = FoldExt(cuda=config.cuda)
     
-    # Do NOT detach here; let gradients flow to D.Encoder
-    fake_features_all = generate_and_encode_fake(fake_fold, wrapper, all_candidate_trees, z_p_expanded)
+    # Note: We don't need cat_losses in D step as we don't update G
+    fake_features_all, _ = generate_and_encode_fake(fake_fold, wrapper, all_candidate_trees, z_p_expanded)
     
     # Score all candidates to find the best ones
     with torch.no_grad():
@@ -248,7 +262,7 @@ def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, gras
     wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=False)
     adv_fold = FoldExt(cuda=config.cuda)
     
-    fake_features_all = generate_and_encode_fake(adv_fold, wrapper, all_candidate_trees, z_p_expanded)
+    fake_features_all, cat_losses_all = generate_and_encode_fake(adv_fold, wrapper, all_candidate_trees, z_p_expanded)
     
     with torch.no_grad():
         scores_all = discriminator(fake_features_all)
@@ -257,6 +271,13 @@ def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, gras
         
     gather_indices = best_indices + torch.arange(0, batch_size, device=scores_all.device) * K
     best_fake_features = fake_features_all[gather_indices]
+    
+    # Select corresponding cat losses for the best candidates
+    # We must be careful here: cat_losses_all is a long tensor of all losses
+    # The number of cat_losses per tree can vary, but generate_and_encode_fake processed them in sequence
+    # To simplify and ensure stability, we take the mean of all cat_losses_all or just reconstruction cat_loss
+    # For now, let's include cat_loss from the adversarial path to ensure nodeClassifier is updated
+    g_cat_adv_loss = cat_losses_all.mean()
     
     g_adv_loss = -discriminator(best_fake_features).mean()
     
