@@ -195,7 +195,7 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, c
     real_fold = FoldExt(cuda=config.cuda)
     real_features = discriminator.get_root_features(real_fold, batch)
     
-    # 2. Fake path: Noise z -> G (decoder) -> Object -> D.Encoder -> D.FC
+    # 2. Fake path Scouting: Find the best candidate trees among K candidates for each noise vector
     K = config.gan_k_candidates
     batch_size = len(batch)
     z_p = torch.randn(batch_size, config.feature_size)
@@ -210,21 +210,25 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, c
             
     z_p_expanded = z_p.repeat_interleave(K, dim=0)
     
-    # Use wrapper with detach_gen=True to block gradients to G but allow them to D.Encoder
-    wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=True)
-    fake_fold = FoldExt(cuda=config.cuda)
-    
-    # Note: We don't need cat_losses in D step as we don't update G
-    fake_features_all, _ = generate_and_encode_fake(fake_fold, wrapper, all_candidate_trees, z_p_expanded)
-    
-    # Score all candidates to find the best ones
+    # Use no_grad for scouting to find best candidates
     with torch.no_grad():
+        scout_fold = FoldExt(cuda=config.cuda)
+        scout_wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=True)
+        fake_features_all, _ = generate_and_encode_fake(scout_fold, scout_wrapper, all_candidate_trees, z_p_expanded)
         scores_all = discriminator(fake_features_all)
         scores_reshaped = scores_all.view(batch_size, K)
-        best_indices = torch.argmax(scores_reshaped, dim=1)
+        best_candidate_offsets = torch.argmax(scores_reshaped, dim=1)
         
-    gather_indices = best_indices + torch.arange(0, batch_size, device=scores_all.device) * K
-    fake_features = fake_features_all[gather_indices]
+    # 3. Fake path Winning: Only encode the winners for backprop to D
+    best_trees = []
+    for i in range(batch_size):
+        idx_in_all = i * K + best_candidate_offsets[i]
+        best_trees.append(all_candidate_trees[idx_in_all])
+        
+    fake_fold = FoldExt(cuda=config.cuda)
+    # Use wrapper with detach_gen=True to block gradients to G but allow them to D.Encoder
+    wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=True)
+    fake_features, _ = generate_and_encode_fake(fake_fold, wrapper, best_trees, z_p)
         
     d_real_out = discriminator(real_features)
     d_fake_out = discriminator(fake_features)
@@ -244,7 +248,7 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, c
 def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, grass_data, config):
     g_opt.zero_grad()
     
-    # Adversarial Loss: No detach, we want gradients for G
+    # 1. Scouting Phase: Find the best candidate trees for each noise vector
     K = config.gan_k_candidates
     batch_size = len(batch)
     z_p = torch.randn(batch_size, config.feature_size)
@@ -258,30 +262,32 @@ def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, gras
             all_candidate_trees.append(grass_data[idx])
     
     z_p_expanded = z_p.repeat_interleave(K, dim=0)
-    # G step: detach_gen=False, gradients flow through everything
-    wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=False)
-    adv_fold = FoldExt(cuda=config.cuda)
-    
-    fake_features_all, cat_losses_all = generate_and_encode_fake(adv_fold, wrapper, all_candidate_trees, z_p_expanded)
     
     with torch.no_grad():
+        scout_fold = FoldExt(cuda=config.cuda)
+        # Use scouting wrapper that detaches G to find best candidates efficiently
+        scout_wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=True)
+        fake_features_all, _ = generate_and_encode_fake(scout_fold, scout_wrapper, all_candidate_trees, z_p_expanded)
         scores_all = discriminator(fake_features_all)
         scores_reshaped = scores_all.view(batch_size, K)
-        best_indices = torch.argmax(scores_reshaped, dim=1)
+        best_candidate_offsets = torch.argmax(scores_reshaped, dim=1)
         
-    gather_indices = best_indices + torch.arange(0, batch_size, device=scores_all.device) * K
-    best_fake_features = fake_features_all[gather_indices]
+    # 2. Winning Path: Only backpropagate through the best trees
+    best_trees = []
+    for i in range(batch_size):
+        idx_in_all = i * K + best_candidate_offsets[i]
+        best_trees.append(all_candidate_trees[idx_in_all])
+        
+    adv_fold = FoldExt(cuda=config.cuda)
+    # G step: detach_gen=False, gradients flow through everything for winners
+    train_wrapper = GANWrapper(decoder, discriminator.encoder, detach_gen=False)
+    best_fake_features, best_cat_losses = generate_and_encode_fake(adv_fold, train_wrapper, best_trees, z_p)
     
-    # Select corresponding cat losses for the best candidates
-    # We must be careful here: cat_losses_all is a long tensor of all losses
-    # The number of cat_losses per tree can vary, but generate_and_encode_fake processed them in sequence
-    # To simplify and ensure stability, we take the mean of all cat_losses_all or just reconstruction cat_loss
-    # For now, let's include cat_loss from the adversarial path to ensure nodeClassifier is updated
-    g_cat_adv_loss = cat_losses_all.mean()
-    
+    # Correctly compute categorical loss only for winners to ensure logical structure
+    g_cat_adv_loss = best_cat_losses.mean() if best_cat_losses.numel() > 0 else torch.tensor(0.0, device=z_p.device)
     g_adv_loss = -discriminator(best_fake_features).mean()
     
-    # 2. VAE Loss (Reconstruction path using vae_encoder)
+    # 3. VAE Loss (Reconstruction path using vae_encoder)
     enc_fold = FoldExt(cuda=config.cuda)
     enc_fold_nodes = []
     for example in batch:
@@ -322,7 +328,8 @@ def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, gras
                   config.lambda_sym * sym_loss + 
                   config.lambda_cat * cat_loss)
                   
-    g_loss = g_adv_loss + config.alpha1 * recon_loss + config.alpha2 * kldiv_loss
+    # Include g_cat_adv_loss to maintain structural integrity during random sampling
+    g_loss = g_adv_loss + config.alpha1 * recon_loss + config.alpha2 * kldiv_loss + config.lambda_cat * g_cat_adv_loss
     g_loss.backward()
     g_opt.step()
     
