@@ -152,10 +152,10 @@ for epoch in range(config.epochs):
             avg_raw_kld = 0.0
             kldiv_loss = zero_tensor
             
-        total_loss = (config.lambda_geom * geom_loss + 
-                      config.lambda_cls * cls_loss + 
-                      config.lambda_sym * sym_loss + 
-                      config.lambda_cat * cat_loss + 
+        total_loss = (config.vae_lambda_geom * geom_loss + 
+                      config.vae_lambda_cls * cls_loss + 
+                      config.vae_lambda_sym * sym_loss + 
+                      config.vae_lambda_cat * cat_loss + 
                       kldiv_loss)
 
         # Do parameter optimization
@@ -181,7 +181,7 @@ for epoch in range(config.epochs):
             max_loss = max(max_loss, total_loss.item(), geom_loss.item(), cls_loss.item(), sym_loss.item(), cat_loss.item(), avg_raw_kld)
             dyn_plot.setxlim(0., (iter_id+1)*1.05)
             dyn_plot.setylim(0., max_loss*1.05)
-            dyn_plot.update_plots(ydata={'Total_loss':plot_total_loss, 'Geom_loss':plot_geom_loss, 'Cls_loss':plot_cls_loss, 'Sym_loss':plot_sym_loss, 'Cat_loss':plot_cat_loss, 'KLD_loss':plot_kldiv_loss})
+            dyn_plot.update_plots(ydata={'Total_loss':plot_total_loss, 'Geom_loss':plot_geom_loss, 'Cls_loss':plot_cls_loss, 'Sym_loss':plot_sym_loss, 'Cat_loss':plot_cat_loss, 'KLD_loss':plot_kldiv_loss}, auto_yscale=False)
             iter_id += 1
 
     # Save snapshots of the models being trained

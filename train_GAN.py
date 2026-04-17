@@ -79,7 +79,7 @@ def setup_training():
     train_iter = torch.utils.data.DataLoader(grass_data, batch_size=config.gan_batch_size, shuffle=True, collate_fn=my_collate)
     
     # D updates its entire structure (Encoder + FC)
-    d_opt = torch.optim.Adam(discriminator.parameters(), lr=config.gan_lr, betas=(config.gan_beta1, config.gan_beta2))
+    d_opt = torch.optim.Adam(discriminator.parameters(), lr=config.gan_lr, betas=(config.gan_beta1, config.gan_beta2), weight_decay=1e-4)
     # G (Generator) in VAE-GAN context often includes the VAE Encoder as well to maintain latent space consistency
     g_opt = torch.optim.Adam(list(decoder.parameters()) + list(vae_encoder.parameters()), lr=config.gan_lr, betas=(config.gan_beta1, config.gan_beta2))
     
@@ -217,7 +217,10 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, c
         fake_features_all, _ = generate_and_encode_fake(scout_fold, scout_wrapper, all_candidate_trees, z_p_expanded)
         scores_all = discriminator(fake_features_all)
         scores_reshaped = scores_all.view(batch_size, K)
-        best_candidate_offsets = torch.argmax(scores_reshaped, dim=1)
+        # Categorical sampling based on D scores to maintain topological diversity
+        temperature = config.gan_temperature
+        probs = torch.softmax(scores_reshaped / temperature, dim=1)
+        best_candidate_offsets = torch.multinomial(probs, 1).squeeze(1)
         
     # 3. Fake path Winning: Only encode the winners for backprop to D
     best_trees = []
@@ -270,7 +273,10 @@ def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, gras
         fake_features_all, _ = generate_and_encode_fake(scout_fold, scout_wrapper, all_candidate_trees, z_p_expanded)
         scores_all = discriminator(fake_features_all)
         scores_reshaped = scores_all.view(batch_size, K)
-        best_candidate_offsets = torch.argmax(scores_reshaped, dim=1)
+        # Categorical sampling based on D scores to maintain topological diversity
+        temperature = config.gan_temperature
+        probs = torch.softmax(scores_reshaped / temperature, dim=1)
+        best_candidate_offsets = torch.multinomial(probs, 1).squeeze(1)
         
     # 2. Winning Path: Only backpropagate through the best trees
     best_trees = []
@@ -323,13 +329,13 @@ def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, gras
         
     kldiv_loss = apply_res[res_idx].sum().mul(-0.5) / len(batch) if kld_fold_nodes else torch.tensor(0.0, device=device)
         
-    recon_loss = (config.lambda_geom * geom_loss + 
-                  config.lambda_cls * cls_loss + 
-                  config.lambda_sym * sym_loss + 
-                  config.lambda_cat * cat_loss)
+    recon_loss = (config.gan_lambda_geom * geom_loss + 
+                  config.gan_lambda_cls * cls_loss + 
+                  config.gan_lambda_sym * sym_loss + 
+                  config.gan_lambda_cat * cat_loss)
                   
     # Include g_cat_adv_loss to maintain structural integrity during random sampling
-    g_loss = g_adv_loss + config.alpha1 * recon_loss + config.alpha2 * kldiv_loss + config.lambda_cat * g_cat_adv_loss
+    g_loss = g_adv_loss + config.alpha1 * recon_loss + config.alpha2 * kldiv_loss + config.gan_lambda_cat * g_cat_adv_loss
     g_loss.backward()
     g_opt.step()
     
@@ -466,14 +472,20 @@ def main():
     total_iter = config.gan_epochs * len(train_iter)
     if not config.no_plot:
         plot_x = [x for x in range(total_iter)]
-        plot_d_loss = [None for x in range(total_iter)]
-        plot_g_loss = [None for x in range(total_iter)]
-        plot_w_dist = [None for x in range(total_iter)]
-        plot_recon_loss = [None for x in range(total_iter)]
-        dyn_plot = DynamicPlot(title='GAN Training metrics over iterations', xdata=plot_x, ydata={'D_Loss':plot_d_loss, 'G_Loss':plot_g_loss, 'W_Dist':plot_w_dist, 'Recon_Loss':plot_recon_loss})
+        plot_ydata = {
+            'D_Loss': [None] * total_iter, 'G_Loss': [None] * total_iter,
+            'D_Real': [None] * total_iter, 'D_Fake': [None] * total_iter,
+            'W_Dist': [None] * total_iter, 'GP': [None] * total_iter,
+            'Recon_Loss': [None] * total_iter, 'G_Adv': [None] * total_iter
+        }
+        subplot_configs = [
+            {'title': 'Total Losses', 'lines': ['D_Loss', 'G_Loss']},
+            {'title': 'Critic Scores', 'lines': ['D_Real', 'D_Fake']},
+            {'title': 'W-Dist & GP', 'lines': ['W_Dist', 'GP']},
+            {'title': 'G Component Losses', 'lines': ['Recon_Loss', 'G_Adv']}
+        ]
+        dyn_plot = DynamicPlot(title='GAN Training Metrics', xdata=plot_x, ydata=plot_ydata, shape=(2, 2), subplot_configs=subplot_configs)
         iter_id = 0
-        max_loss = 0
-        min_loss = 0
     
     if config.save_snapshot:
         if not os.path.exists(config.save_path):
@@ -482,10 +494,17 @@ def main():
         if not os.path.exists(snapshot_folder):
             os.makedirs(snapshot_folder)
             
-    header = '     Time    Epoch     Iteration    Progress(%)  D_Loss  G_Loss  W-Dist   GP   ReconLoss'
-    log_template = ' '.join('{:>9s},{:>5.0f}/{:<5.0f},{:>5.0f}/{:<5.0f},{:>9.1f}%,{:>8.2f},{:>8.2f},{:>8.2f},{:>6.2f},{:>10.2f}'.split(','))
+    header = '     Time    Epoch     Iteration    Progress(%)  D_Loss  G_Loss  W-Dist   GP   D_Real  D_Fake  ReconLoss'
+    log_template = ' '.join('{:>9s},{:>5.0f}/{:<5.0f},{:>5.0f}/{:<5.0f},{:>9.1f}%,{:>8.2f},{:>8.2f},{:>8.2f},{:>6.2f},{:>7.2f},{:>7.2f},{:>10.2f}'.split(','))
     print(header)
     
+    # Historical data for final plotting
+    history = {
+        'd_loss': [], 'g_loss': [], 'w_dist': [], 'gp': [],
+        'd_real': [], 'd_fake': [], 'recon': [], 'g_adv': []
+    }
+    
+
     for epoch in range(config.gan_epochs):
         for batch_idx, batch in enumerate(train_iter):
             # 1. Update Discriminator n_critic times
@@ -497,32 +516,69 @@ def main():
             
             w_dist = d_real - d_fake
             
+            # Update history
+            history['d_loss'].append(d_loss); history['g_loss'].append(g_loss)
+            history['w_dist'].append(w_dist); history['gp'].append(gp)
+            history['d_real'].append(d_real); history['d_fake'].append(d_fake)
+            history['recon'].append(recon); history['g_adv'].append(g_adv)
+
             if batch_idx % config.show_log_every == 0:
                 print(log_template.format(strftime("%H:%M:%S", time.gmtime(time.time()-start)),
                     epoch, config.gan_epochs, 1+batch_idx, len(train_iter),
                     100. * (1+batch_idx+len(train_iter)*epoch) / (len(train_iter)*config.gan_epochs),
-                    d_loss, g_loss, w_dist, gp, recon))
+                    d_loss, g_loss, w_dist, gp, d_real, d_fake, recon))
             
             if not config.no_plot:
-                plot_d_loss[iter_id] = d_loss
-                plot_g_loss[iter_id] = g_loss
-                plot_w_dist[iter_id] = w_dist
-                plot_recon_loss[iter_id] = recon
-                max_loss = max(max_loss, d_loss, g_loss, recon, w_dist)
-                min_loss = min(min_loss, d_loss, g_loss, recon, w_dist)
+                plot_ydata['D_Loss'][iter_id] = d_loss
+                plot_ydata['G_Loss'][iter_id] = g_loss
+                plot_ydata['D_Real'][iter_id] = d_real
+                plot_ydata['D_Fake'][iter_id] = d_fake
+                plot_ydata['W_Dist'][iter_id] = w_dist
+                plot_ydata['GP'][iter_id] = gp
+                plot_ydata['Recon_Loss'][iter_id] = recon
+                plot_ydata['G_Adv'][iter_id] = g_adv
+                
                 dyn_plot.setxlim(0., (iter_id+1)*1.05)
-                dyn_plot.setylim(min_loss - 0.1 * abs(min_loss), max_loss*1.05)
-                dyn_plot.update_plots(ydata={'D_Loss':plot_d_loss, 'G_Loss':plot_g_loss, 'W_Dist':plot_w_dist, 'Recon_Loss':plot_recon_loss})
+                dyn_plot.update_plots(ydata=plot_ydata)
                 iter_id += 1
-                    
+                
         if config.save_snapshot and (epoch+1) % config.save_snapshot_every == 0:
             print("Saving snapshots ...")
-            torch.save(vae_encoder, snapshot_folder+f'//gan_encoder_epoch_{epoch+1}.pkl')
-            torch.save(decoder, snapshot_folder+f'//gan_decoder_epoch_{epoch+1}.pkl')
+            torch.save(vae_encoder, os.path.join(snapshot_folder, f'gan_encoder_epoch_{epoch+1}.pkl'))
+            torch.save(decoder, os.path.join(snapshot_folder, f'gan_decoder_epoch_{epoch+1}.pkl'))
+            torch.save(discriminator, os.path.join(snapshot_folder, f'gan_discriminator_epoch_{epoch+1}.pkl'))
+
             
     print("Saving final models ...")
-    torch.save(vae_encoder, config.save_path+'//gan_encoder_model.pkl')
-    torch.save(decoder, config.save_path+'//gan_decoder_model.pkl')
+    torch.save(vae_encoder, os.path.join(config.save_path, 'gan_encoder_model.pkl'))
+    torch.save(decoder, os.path.join(config.save_path, 'gan_decoder_model.pkl'))
+    torch.save(discriminator, os.path.join(config.save_path, 'gan_discriminator_model.pkl'))
+
+    # Save training curves
+    print("Saving training curves to 'gan_training_loss.png' ...")
+    fig, axs = plt.subplots(2, 2, figsize=(12, 7))
+    x = range(len(history['d_loss']))
+    
+    axs[0, 0].plot(x, history['d_loss'], label='D Loss')
+    axs[0, 0].plot(x, history['g_loss'], label='G Loss')
+    axs[0, 0].set_title('Total Losses'); axs[0, 0].legend(); axs[0, 0].grid(True)
+    
+    axs[0, 1].plot(x, history['d_real'], label='D Real Score')
+    axs[0, 1].plot(x, history['d_fake'], label='D Fake Score')
+    axs[0, 1].set_title('Critic Scores'); axs[0, 1].legend(); axs[0, 1].grid(True)
+    
+    axs[1, 0].plot(x, history['w_dist'], label='W-Distance')
+    axs[1, 0].plot(x, history['gp'], label='Gradient Penalty')
+    axs[1, 0].set_title('W-Dist & GP'); axs[1, 0].legend(); axs[1, 0].grid(True)
+    
+    axs[1, 1].plot(x, history['recon'], label='G Recon Loss')
+    axs[1, 1].plot(x, history['g_adv'], label='G Adv Loss')
+    axs[1, 1].set_title('G Component Losses'); axs[1, 1].legend(); axs[1, 1].grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(config.save_path, 'gan_training_loss.png'))
+    plt.close()
+    
     print("DONE")
 
 if __name__ == "__main__":
