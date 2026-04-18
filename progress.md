@@ -7,8 +7,9 @@
 - **VAE-WGAN-GP 双阶段训练架构**:
   - 第一阶段 (Autoencoder): 通过 `grassmodel.py` 训练重构与 KL 散度损失。
   - 第二阶段 (GAN): 通过 `train_GAN.py` 复用第一阶段预训练权重，解码器直接作为 GAN 生成器，编码器由 `GANDiscriminator` 包装以输出线性标量作为 Critic 判别器。
+  - 拓扑候选采样 (Scouting Phase): 为防止严重的拓扑模式坍塌 (Topological Mode Collapse)，生成器与判别器在训练时必须基于随机噪声与真实数据潜变量 (mu) 的 L2 距离来获取 Top-K 候选树，再通过判别器打分与 Temperature Scaling 进行 Categorical 采样。严禁在全数据集中进行完全随机的盲抽。
 - **动态批处理框架**: 核心逻辑依赖 `torchfold` 进行结构递归神经网络的动态批处理。由于原有的 `pytorch_tools` 包不可用，应统一使用独立安装的 `torchfold` 包并继承其 `Fold` 类。
-- **设备一致性**: 禁止硬编码 `.cuda()`，应优先使用 `torch.randn_like` 或 `tensor.to(device)` 以保持张量在同一设备上。
+- **设备一致性**: 全局根据 `config.cuda` 的布尔值决定设备挂载，通常使用 `if config.cuda: tensor = tensor.cuda()` 模式。避免在未检查配置的情况下直接硬编码 `.cuda()`，以兼容 CPU 环境。
 
 ## 2. 状态管理与核心防线 (State Management & Core Defenses)
 

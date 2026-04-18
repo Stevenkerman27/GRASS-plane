@@ -188,7 +188,17 @@ def generate_and_encode_fake(fold, wrapper, batch, z_p):
     results = fold.apply(wrapper, [encoded_root_nodes, cat_losses])
     return results[0], results[1]
 
-def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, config):
+def get_topk_candidate_trees(z_p, mu_candidates, grass_data, K):
+    distances = torch.cdist(z_p, mu_candidates, p=2.0)
+    _, topk_indices = torch.topk(distances, K, dim=1, largest=False)
+    all_candidate_trees = []
+    batch_size = z_p.size(0)
+    for i in range(batch_size):
+        for idx in topk_indices[i]:
+            all_candidate_trees.append(grass_data[idx.item()])
+    return all_candidate_trees
+
+def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, config, mu_candidates):
     d_opt.zero_grad()
     
     # 1. Real path: Real structure -> D.Encoder -> D.FC
@@ -202,11 +212,7 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, c
     if config.cuda:
         z_p = z_p.cuda()
     
-    all_candidate_trees = []
-    for i in range(batch_size):
-        random_indices = torch.randint(0, len(grass_data), (K,))
-        for idx in random_indices:
-            all_candidate_trees.append(grass_data[idx])
+    all_candidate_trees = get_topk_candidate_trees(z_p, mu_candidates, grass_data, K)
             
     z_p_expanded = z_p.repeat_interleave(K, dim=0)
     
@@ -248,7 +254,7 @@ def train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, c
     
     return d_loss.item(), d_real.item(), d_fake.item(), gp.item()
 
-def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, grass_data, config):
+def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, grass_data, config, mu_candidates):
     g_opt.zero_grad()
     
     # 1. Scouting Phase: Find the best candidate trees for each noise vector
@@ -258,11 +264,7 @@ def train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, gras
     if config.cuda:
         z_p = z_p.cuda()
         
-    all_candidate_trees = []
-    for i in range(batch_size):
-        random_indices = torch.randint(0, len(grass_data), (K,))
-        for idx in random_indices:
-            all_candidate_trees.append(grass_data[idx])
+    all_candidate_trees = get_topk_candidate_trees(z_p, mu_candidates, grass_data, K)
     
     z_p_expanded = z_p.repeat_interleave(K, dim=0)
     
@@ -372,13 +374,22 @@ def run_lr_range_test(config, dataloader, discriminator, vae_encoder, decoder):
     beta = 0.2
     avgs = {k: 0.0 for k in metrics.keys()}
     
+    print("Computing latent representations (mu) for all candidates...")
+    with torch.no_grad():
+        mu_fold = FoldExt(cuda=config.cuda)
+        mu_nodes = []
+        for example in dataloader.dataset:
+            mu_nodes.append(grassmodel.encode_structure_fold(mu_fold, example))
+        encoded_all = mu_fold.apply(vae_encoder, [mu_nodes])[0]
+        mu_candidates = encoded_all[:, :config.feature_size]
+
     for i, batch in enumerate(dataloader):
         current_lr = optimizer_D.param_groups[0]['lr']
         
         for _ in range(config.n_critic):
-            d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, optimizer_D, dataloader.dataset, config)
+            d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, optimizer_D, dataloader.dataset, config, mu_candidates)
         
-        g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, optimizer_G, dataloader.dataset, config)
+        g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, optimizer_G, dataloader.dataset, config, mu_candidates)
 
         w_dist = d_real - d_fake
         
@@ -506,13 +517,21 @@ def main():
     
 
     for epoch in range(config.gan_epochs):
+        with torch.no_grad():
+            mu_fold = FoldExt(cuda=config.cuda)
+            mu_nodes = []
+            for example in train_iter.dataset:
+                mu_nodes.append(grassmodel.encode_structure_fold(mu_fold, example))
+            encoded_all = mu_fold.apply(vae_encoder, [mu_nodes])[0]
+            mu_candidates = encoded_all[:, :config.feature_size]
+
         for batch_idx, batch in enumerate(train_iter):
             # 1. Update Discriminator n_critic times
             for _ in range(config.n_critic):
-                d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, config)
+                d_loss, d_real, d_fake, gp = train_discriminator_step(batch, discriminator, decoder, d_opt, grass_data, config, mu_candidates)
             
             # 2. Update Generator once
-            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, grass_data, config)
+            g_loss, g_adv, recon, kld = train_generator_step(batch, discriminator, vae_encoder, decoder, g_opt, grass_data, config, mu_candidates)
             
             w_dist = d_real - d_fake
             

@@ -12,7 +12,7 @@ def get_args():
 
     # GAN Hyperparameters
     parser.add_argument('--alpha1', type=float, default=0.05, help='Weight for VAE reconstruction loss in GAN training')
-    parser.add_argument('--alpha2', type=float, default=0.1, help='Weight for VAE KL divergence loss in GAN training')
+    parser.add_argument('--alpha2', type=float, default=0.05, help='Weight for VAE KL divergence loss in GAN training')
     parser.add_argument('--lambda_gp', type=float, default=10.0, help='Weight for gradient penalty in WGAN-GP')
     parser.add_argument('--gan_lambda_geom', type=float, default=0.4, help='Weight for box geometry MSE loss')
     parser.add_argument('--gan_lambda_cls', type=float, default=1.0, help='Weight for box category cross-entropy loss')
@@ -21,9 +21,9 @@ def get_args():
     parser.add_argument('--gan_lr', type=float, default=1e-4, help='Learning rate for GAN optimizers')
     parser.add_argument('--gan_beta1', type=float, default=0.0, help='Beta1 for GAN Adam optimizer')
     parser.add_argument('--gan_beta2', type=float, default=0.9, help='Beta2 for GAN Adam optimizer')
-    parser.add_argument('--n_critic', type=int, default=3, help='Number of discriminator updates per generator update')
+    parser.add_argument('--n_critic', type=int, default=1, help='Number of discriminator updates per generator update')
     parser.add_argument('--gan_k_candidates', type=int, default=5, help='Number of structure candidates for each noise vector in G step')
-    parser.add_argument('--gan_epochs', type=int, default=50, help='Number of epochs for GAN training')
+    parser.add_argument('--gan_epochs', type=int, default=100, help='Number of epochs for GAN training')
     parser.add_argument('--gan_batch_size', type=int, default=10, help='Batch size for GAN training')
     parser.add_argument('--gan_temperature', type=float, default=1.0, help='Temperature for categorical sampling of GAN candidate structures')
 
@@ -36,7 +36,7 @@ def get_args():
     parser.add_argument('--kl_weight_target', type=float, default=0.03)
     parser.add_argument('--kl_anneal_epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=10)
-    parser.add_argument('--show_log_every', type=int, default=3)
+    parser.add_argument('--show_log_every', type=int, default=10)
     parser.add_argument('--save_log', action='store_true', default=False)
     parser.add_argument('--save_log_every', type=int, default=3)
     parser.add_argument('--save_snapshot', action='store_true', default=False)
