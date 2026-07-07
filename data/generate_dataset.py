@@ -10,6 +10,8 @@ BOX_OP = 0
 ADJ_OP = 1
 SYM_OP = 2
 
+wing_span = 1.0
+
 class TreeAssembler:
     def __init__(self):
         self.boxes = []
@@ -44,13 +46,13 @@ def build_engine(x, y, z, length, width):
 
 def build_wing(x_root, y_root, z_root, span_half, type):
     if type == "lifting":
-        AR = random.uniform(0.9, 8)
+        AR = random.uniform(1.0, 8)
     else:
-        AR = random.uniform(0.8, 2.5)
+        AR = random.uniform(0.9, 4)
     taper = random.uniform(0.3, 1.0)
     root_chord = span_half/AR*2/(1+taper)
     dihedral = random.uniform(-span_half*0.1, span_half*0.1)
-    sweep = random.uniform(0, root_chord * 1)
+    sweep = random.uniform(0, root_chord * 0.8)
     tip_chord = root_chord * taper
     thick = random.uniform(0.02, 0.05)
     tip_thick = thick * random.uniform(0.3, 0.9)
@@ -96,18 +98,17 @@ def build_canard_layout(assembler):
     fuse_box, L_fuse, H_fuse, W_fuse = build_fuselage()
     assembler.push_box(fuse_box)
     
+    # Main Wing (Aft)
+    wing_pos_x = random.uniform(0.6, 0.8) * L_fuse
+    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, "lifting")
+    assembler.push_box(wing_box)
+
     # Canard (Forewing)
-    canard_span = random.uniform(0.15, 0.3)
+    canard_span = wing_span*random.uniform(0.2, 0.6)
     canard_box = build_wing(0.1 * L_fuse, W_fuse/2, 0, canard_span, "stab")
     assembler.push_box(canard_box)
     assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     assembler.apply_adj() # Connect Canard to Fuselage
-    
-    # Main Wing (Aft)
-    wing_span = random.uniform(0.5, 0.9)
-    wing_pos_x = random.uniform(0.6, 0.8) * L_fuse
-    wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, "lifting")
-    assembler.push_box(wing_box)
     
     # Engine logic for Canard
     eng_loc = random.choice(['wing', 'rear'])
@@ -141,7 +142,6 @@ def build_flying_wing(assembler):
     fuse_box = [0, 0, 0, L, 0, 0, W, H, W, H, 1, 0, 0]
     assembler.push_box(fuse_box)
     
-    wing_span = random.uniform(0.8, 1.4)
     wing_box = build_wing(random.uniform(0.3, 0.8) * L, W/2, 0, wing_span, "lifting")
     assembler.push_box(wing_box)
     
@@ -165,7 +165,6 @@ def build_conventional(assembler):
     assembler.push_box(fuse_box)
 
     # Main Wing
-    wing_span = random.uniform(0.6, 1.2)
     wing_pos_x = random.uniform(0.25, 0.45) * L_fuse
     wing_box = build_wing(wing_pos_x, W_fuse/2, 0, wing_span, "lifting")
     assembler.push_box(wing_box)
@@ -193,10 +192,10 @@ def build_conventional(assembler):
     
     # Tail
     tail_type = random.choice(['T', 'conventional'])
-    v_span = random.uniform(0.25, 0.4)
+    v_span = wing_span*random.uniform(0.25, 0.7)
+    ht_span = v_span*random.uniform(0.8, 1.2)
     if tail_type == 'T':
         vt_pos =  random.uniform(0.9, 1.0)*L_fuse
-        ht_span = random.uniform(0.2, 0.45)
         htail_box = build_wing(vt_pos+ht_span*random.uniform(0, 0.3), 0, H_fuse/2 + v_span, ht_span, "stab")
         assembler.push_box(htail_box)
         assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -209,7 +208,7 @@ def build_conventional(assembler):
         vtail_box[1] = 0; vtail_box[2] = H_fuse/2; vtail_box[4] = 0; vtail_box[5] = H_fuse/2 + v_span
         assembler.push_box(vtail_box)
         assembler.apply_adj()
-        htail_box = build_wing(0.88 * L_fuse, W_fuse/2, 0, random.uniform(0.2, 0.4), "stab")
+        htail_box = build_wing(0.88 * L_fuse, W_fuse/2, 0, ht_span, "stab")
         assembler.push_box(htail_box)
         assembler.apply_sym([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     

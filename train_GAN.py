@@ -595,8 +595,15 @@ def main():
     axs[1, 1].set_title('G Component Losses'); axs[1, 1].legend(); axs[1, 1].grid(True)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(config.save_path, 'gan_training_loss.png'))
-    plt.close()
+    save_path = os.path.join(config.save_path, 'gan_training_loss.png')
+    plt.savefig(save_path)
+    
+    if not config.no_plot:
+        print(f"Training complete. Plot saved to '{save_path}'. Close the window to exit.")
+        plt.ioff()
+        plt.show()
+    else:
+        plt.close()
     
     print("DONE")
 
