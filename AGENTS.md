@@ -1,8 +1,7 @@
 Chinese character involved in this project, mind encoding!
 使用myml python环境,位于D:\Software\anaconda\envs\myml. torch版本为2.9.0+cu128
-工作目录中是fork的别人的GRASS框架。我需要你帮我完善代码并扩充
-使用context7 MCP查询pytorch文档
-理解任务后先与用户讨论想法, must ensure alignment before start editing
+工作目录中是fork的别人的生成递归编码器框架。我需要你帮我完善代码并扩充，以用于飞行器布局的生成
+Grass-matlab中是作者的原始matlab实现，禁止修改，不要commit，鼓励查询并参考
 mistakes部分中记录了过去常犯的错误，必须阅读保证不再犯错。如果有新的frequent mistake同样记录在mistakes部分中
 
 开发规则：
@@ -14,9 +13,9 @@ mistakes部分中记录了过去常犯的错误，必须阅读保证不再犯错
 
 3. 单一来源,常量、魔术字符串, 数据库 Schema 必须定义在集中配置文件中.
 
-4. 在任务完成后，梳理本次开发产生的架构变动、新的防御性编程基线等，将它们提炼为全局代码层面的客观规律，更新到全局 progress 文档的对应模块中。删除已修复的短期 Bug 细节以及过时的模块描述，保持该文档作为‘当前系统架构与开发约束准则’的纯粹性。不要新增progress条目
+4. Fail-Fast 机制暴露错误
+禁止过度防御性编程，不使用 config.get('max_workers', 4)的默认参数，必须让潜在的错误直接通过报错暴露出来
+
 
 mistakes:
-1. 当在CLI执行 Python 代码块时，必须遵循以下原则：不要在 f-string 中使用引号嵌套；禁止在 {} 内出现反斜杠；严格引号分层。禁止在 f-string 的大括号内使用任何引号或反斜杠。如果需要打印字典内容，使用 print('text', dict['key']) 这种多参数形式，不要在字符串内部嵌套转义引号
-
-2. 不要尝试执行单行复杂命令，换行语法容易出错。2行以上命令必须写出临时代码再执行
+(无)

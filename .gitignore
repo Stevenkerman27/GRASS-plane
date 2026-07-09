@@ -1,2 +1,4 @@
 __pycache__/
 git.ps1
+shared_pkg_staging/
+outputs/
