@@ -58,9 +58,7 @@ def main():
 
     result = infra.runaero_panel(
         CG=0.25 * root_chord,
-        AlphaStart_input=0.0,
-        AlphaEnd_input=8.0,
-        AlphaNpts_input=2,
+        alpha=8.0,
         air_spd=cruise_spd,
         wing_cfg=wing_cfg,
         Cl_target=Cl_target,
@@ -69,7 +67,15 @@ def main():
 
     vsp_path = output_dir / infra.file_name
     polar_path = output_dir / f"{infra.case_name}.polar"
-    print("Panel result:", result)
+    drag, lift, net_drag, power, cltot, cdtot, cmy = result
+    print("Panel result:")
+    print("  drag:", drag)
+    print("  lift:", lift)
+    print("  net_drag:", net_drag)
+    print("  power:", power)
+    print("  Cltot:", cltot)
+    print("  CDtot:", cdtot)
+    print("  CMy:", cmy)
     print("OpenVSP model:", vsp_path)
     print("Polar file:", polar_path)
 

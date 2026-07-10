@@ -38,15 +38,28 @@ ThinGeomSet = SET_NONE
 
 ## 函数边界
 
-`runaero_panel(...)` 用于不带作动盘的面元法 alpha sweep。它复用 VLM 跑法的参考量、收敛参数和 `.polar` 解析逻辑，但强制隐藏所有 PROP 几何，并且不配置 actuator disk。
+`runaero_panel(...)` 用于不带作动盘的面元法单迎角点计算。它复用 VLM 跑法的参考量、收敛参数和 `.polar` 解析逻辑，但强制隐藏所有 PROP 几何，并且不配置 actuator disk。
 
-返回值保持与 `runaero(...)` 一致:
+调用接口为:
 
-```text
-drag, alpha, lift, net_drag, power, Cl_list, CMy
+```python
+runaero_panel(CG, alpha, air_spd, wing_cfg, Cl_target, sol_config, angle=[])
 ```
 
-其中 panel 跑法没有作动盘，`power` 为 0，`net_drag` 等于气动阻力。
+`runaero_panel(...)` 返回值顺序为:
+
+```text
+drag, lift, net_drag, power, Cltot, CDtot, CMy
+```
+
+函数只接收一个 `alpha`，内部固定调用 VSPAERO 的 `AlphaStart = AlphaEnd = alpha` 和 `AlphaNpts = 1`，避免把 sweep 和单点气动语义混在一起。
+
+Panel 跑法没有作动盘，`power` 为 0，`net_drag` 等于气动阻力。升力和阻力直接由 `.polar` 中的系数计算:
+
+```text
+lift = 0.5 * rho * V^2 * Sref * Cltot
+drag = 0.5 * rho * V^2 * Sref * CDtot
+```
 
 ## 简单机翼加机身测试
 
@@ -67,7 +80,7 @@ outputs\simple_wing_panel\
 - `simple_wing_panel.vsp3`
 - `simple_wing_panel.polar`
 
-脚本会创建一个椭圆多段机身和一个简单梯形翼，然后用 panel 法运行 VSPAERO alpha sweep。参考面积、展长和弦长仍按机翼定义，机身作为厚面几何参与 panel 几何计算。
+脚本会创建一个椭圆多段机身和一个简单梯形翼，然后用 panel 法运行 VSPAERO 单迎角点计算。参考面积、展长和弦长仍按机翼定义，机身作为厚面几何参与 panel 几何计算。
 
 运行完成后，打开 `simple_wing_panel.vsp3`，检查 OpenVSP 中简单梯形翼、椭圆机身和二者相对位置是否正常，并确认 VSPAERO panel 网格没有异常破面。
 

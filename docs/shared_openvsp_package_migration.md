@@ -26,9 +26,9 @@
 
 1. 定位共享包目录 `D:\3D\Projects\aircraft-tools`
 2. 将共享包目录加入 `sys.path`
-3. 从 `aircraft_tools.openvsp_infrastructure` re-export 现有符号
+3. 将 `infrastructure` 模块名指向 `aircraft_tools.openvsp_infrastructure` 模块对象
 
-因此本项目原有 `import infrastructure as infra` 调用方式可以先不改。
+因此本项目原有 `import infrastructure as infra` 调用方式可以先不改。注意这里必须使用模块对象别名，而不是 `from ... import *` 复制符号；否则 `infra.file_name = ...` 和 `infra.case_name = ...` 只会修改 shim 自己的变量，真正执行函数的共享包模块仍然会使用默认的 `test.vsp3` 和 `test`。
 
 ## 推荐的后续迁移
 

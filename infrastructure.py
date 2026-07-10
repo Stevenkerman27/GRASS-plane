@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib
 import sys
 
 
@@ -13,4 +14,5 @@ shared_package_path = str(_SHARED_PACKAGE_ROOT)
 if shared_package_path not in sys.path:
     sys.path.insert(0, shared_package_path)
 
-from aircraft_tools.openvsp_infrastructure import *  # noqa: F401,F403
+_shared_module = importlib.import_module("aircraft_tools.openvsp_infrastructure")
+sys.modules[__name__] = _shared_module
