@@ -2,6 +2,7 @@ import math
 import torch
 from torch import nn
 from time import time
+import util
 
 #########################################################################################
 ## Encoder
@@ -76,12 +77,24 @@ class GRASSEncoder(nn.Module):
     def __init__(self, config):
         super(GRASSEncoder, self).__init__()
         self.box_encoder = BoxEncoder(input_size = config.box_code_size, feature_size = config.feature_size)
+        self.fuselage_box_encoder = BoxEncoder(input_size = util.FUSELAGE_GEOMETRY_SIZE, feature_size = config.feature_size)
+        self.wing_box_encoder = BoxEncoder(input_size = util.WING_GEOMETRY_SIZE + util.AIRFOIL_BEZIER_CODE_SIZE, feature_size = config.feature_size)
+        self.engine_box_encoder = BoxEncoder(input_size = util.ENGINE_GEOMETRY_SIZE, feature_size = config.feature_size)
         self.adj_encoder = AdjEncoder(feature_size = config.feature_size, hidden_size = config.hidden_size)
         self.sym_encoder = SymEncoder(feature_size = config.feature_size, symmetry_size = config.symmetry_size, hidden_size = config.hidden_size)
         self.sample_encoder = Sampler(feature_size = config.feature_size, hidden_size = config.hidden_size)
 
     def boxEncoder(self, box):
         return self.box_encoder(box)
+
+    def fuselageBoxEncoder(self, geometry):
+        return self.fuselage_box_encoder(geometry)
+
+    def wingBoxEncoder(self, geometry, airfoil):
+        return self.wing_box_encoder(torch.cat([geometry, airfoil], dim=1))
+
+    def engineBoxEncoder(self, geometry):
+        return self.engine_box_encoder(geometry)
 
     def adjEncoder(self, left, right):
         return self.adj_encoder(left, right)
@@ -100,6 +113,16 @@ def encode_structure_fold(fold, tree, use_sampler=True):
     """
     def encode_node(node):
         if node.is_leaf():
+            if isinstance(node.box, dict):
+                component = node.box[util.BOX_COMPONENT_KEY]
+                geometry = node.box[util.BOX_GEOMETRY_KEY]
+                if component == util.COMPONENT_WING:
+                    return fold.add('wingBoxEncoder', geometry, node.box[util.BOX_AIRFOIL_KEY])
+                if component == util.COMPONENT_FUSELAGE:
+                    return fold.add('fuselageBoxEncoder', geometry)
+                if component == util.COMPONENT_ENGINE:
+                    return fold.add('engineBoxEncoder', geometry)
+                raise ValueError(f"Unknown component type: {component}")
             return fold.add('boxEncoder', node.box) #fold.add只录制，不执行
         elif node.is_adj():
             left = encode_node(node.left)
@@ -199,19 +222,60 @@ class BoxDecoder(nn.Module):
         vector_cls = vector[:, 10:]
         return torch.cat([vector_geom, vector_cls], dim=1)
 
+
+class TypedBoxDecoder(nn.Module):
+    def __init__(self, feature_size, output_size, tanh_size):
+        super(TypedBoxDecoder, self).__init__()
+        if tanh_size > output_size:
+            raise ValueError(f"tanh_size {tanh_size} exceeds output_size {output_size}")
+        self.mlp = nn.Linear(feature_size, output_size)
+        self.tanh_size = tanh_size
+        self.tanh = nn.Tanh()
+
+    def forward(self, parent_feature):
+        vector = self.mlp(parent_feature)
+        vector_tanh = self.tanh(vector[:, :self.tanh_size])
+        vector_raw = vector[:, self.tanh_size:]
+        return torch.cat([vector_tanh, vector_raw], dim=1)
+
 class GRASSDecoder(nn.Module):
     def __init__(self, config):
         super(GRASSDecoder, self).__init__()
         self.box_decoder = BoxDecoder(feature_size = config.feature_size, box_size = config.box_code_size)
+        self.fuselage_box_decoder = TypedBoxDecoder(
+            feature_size = config.feature_size,
+            output_size = util.FUSELAGE_GEOMETRY_SIZE,
+            tanh_size = util.FUSELAGE_GEOMETRY_SIZE,
+        )
+        self.wing_box_decoder = TypedBoxDecoder(
+            feature_size = config.feature_size,
+            output_size = util.WING_GEOMETRY_SIZE + util.AIRFOIL_BEZIER_CODE_SIZE,
+            tanh_size = util.WING_GEOMETRY_SIZE,
+        )
+        self.engine_box_decoder = TypedBoxDecoder(
+            feature_size = config.feature_size,
+            output_size = util.ENGINE_GEOMETRY_SIZE,
+            tanh_size = util.ENGINE_GEOMETRY_SIZE,
+        )
         self.adj_decoder = AdjDecoder(feature_size = config.feature_size, hidden_size = config.hidden_size)
         self.sym_decoder = SymDecoder(feature_size = config.feature_size, symmetry_size = config.symmetry_size, hidden_size = config.hidden_size)
         self.sample_decoder = SampleDecoder(feature_size = config.feature_size, hidden_size = config.hidden_size)
         self.node_classifier = NodeClassifier(feature_size = config.feature_size, hidden_size = config.hidden_size)
+        self.component_classifier = NodeClassifier(feature_size = config.feature_size, hidden_size = config.hidden_size)
         self.mseLoss = nn.MSELoss()  # pytorch's mean squared error loss
         self.creLoss = nn.CrossEntropyLoss()  # pytorch's cross entropy loss (NOTE: no softmax is needed before)
 
     def boxDecoder(self, feature):
         return self.box_decoder(feature)
+
+    def fuselageBoxDecoder(self, feature):
+        return self.fuselage_box_decoder(feature)
+
+    def wingBoxDecoder(self, feature):
+        return self.wing_box_decoder(feature)
+
+    def engineBoxDecoder(self, feature):
+        return self.engine_box_decoder(feature)
 
     def adjDecoder(self, feature):
         return self.adj_decoder(feature)
@@ -224,6 +288,9 @@ class GRASSDecoder(nn.Module):
 
     def nodeClassifier(self, feature):
         return self.node_classifier(feature)
+
+    def componentClassifier(self, feature):
+        return self.component_classifier(feature)
 
     def boxLossEstimator(self, box_feature, gt_box_feature):
         import torch
@@ -239,6 +306,40 @@ class GRASSDecoder(nn.Module):
             losses.append(torch.stack([geom_l, cls_l]))
 
         return torch.stack(losses, 0)
+
+    def fuselageBoxLossEstimator(self, geometry, component_logits, gt_geometry, gt_component):
+        import torch
+        losses = []
+        for pred_geom, pred_component, target_geom, target_component in zip(
+                geometry, component_logits, gt_geometry, gt_component):
+            payload_l = self.mseLoss(pred_geom, target_geom)
+            component_l = self.creLoss(pred_component.unsqueeze(0), target_component.unsqueeze(0))
+            losses.append(torch.stack([payload_l, component_l]))
+        return torch.stack(losses, 0)
+
+    def wingBoxLossEstimator(self, payload, component_logits, gt_geometry, gt_airfoil, gt_component):
+        import torch
+        losses = []
+        for pred_payload, pred_component, target_geom, target_airfoil, target_component in zip(
+                payload, component_logits, gt_geometry, gt_airfoil, gt_component):
+            pred_geom = pred_payload[:util.WING_GEOMETRY_SIZE]
+            pred_airfoil = pred_payload[util.WING_GEOMETRY_SIZE:]
+            geometry_l = self.mseLoss(pred_geom, target_geom)
+            airfoil_l = self.mseLoss(pred_airfoil, target_airfoil)
+            component_l = self.creLoss(pred_component.unsqueeze(0), target_component.unsqueeze(0))
+            losses.append(torch.stack([geometry_l + airfoil_l, component_l]))
+        return torch.stack(losses, 0)
+
+    def engineBoxLossEstimator(self, geometry, component_logits, gt_geometry, gt_component):
+        import torch
+        losses = []
+        for pred_geom, pred_component, target_geom, target_component in zip(
+                geometry, component_logits, gt_geometry, gt_component):
+            payload_l = self.mseLoss(pred_geom, target_geom)
+            component_l = self.creLoss(pred_component.unsqueeze(0), target_component.unsqueeze(0))
+            losses.append(torch.stack([payload_l, component_l]))
+        return torch.stack(losses, 0)
+
     def symLossEstimator(self, sym_param, gt_sym_param):
         import torch
         return torch.stack([self.mseLoss(s, gt) for s, gt in zip(sym_param, gt_sym_param)], 0)
@@ -255,8 +356,44 @@ def decode_structure_fold(fold, feature, tree):
 
     def decode_node_box(node, feature):
         if node.is_leaf():
-            box = fold.add('boxDecoder', feature)
-            box_losses.append(fold.add('boxLossEstimator', box, node.box))
+            if isinstance(node.box, dict):
+                component = node.box[util.BOX_COMPONENT_KEY]
+                geometry = node.box[util.BOX_GEOMETRY_KEY]
+                component_logits = fold.add('componentClassifier', feature)
+                component_target = torch.LongTensor([component])
+                if component == util.COMPONENT_WING:
+                    box = fold.add('wingBoxDecoder', feature)
+                    box_losses.append(fold.add(
+                        'wingBoxLossEstimator',
+                        box,
+                        component_logits,
+                        geometry,
+                        node.box[util.BOX_AIRFOIL_KEY],
+                        component_target,
+                    ))
+                elif component == util.COMPONENT_FUSELAGE:
+                    box = fold.add('fuselageBoxDecoder', feature)
+                    box_losses.append(fold.add(
+                        'fuselageBoxLossEstimator',
+                        box,
+                        component_logits,
+                        geometry,
+                        component_target,
+                    ))
+                elif component == util.COMPONENT_ENGINE:
+                    box = fold.add('engineBoxDecoder', feature)
+                    box_losses.append(fold.add(
+                        'engineBoxLossEstimator',
+                        box,
+                        component_logits,
+                        geometry,
+                        component_target,
+                    ))
+                else:
+                    raise ValueError(f"Unknown component type: {component}")
+            else:
+                box = fold.add('boxDecoder', feature)
+                box_losses.append(fold.add('boxLossEstimator', box, node.box))
             label = fold.add('nodeClassifier', feature)
             cat_losses.append(fold.add('classifyLossEstimator', label, node.label))
         elif node.is_adj():

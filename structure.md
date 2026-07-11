@@ -1,6 +1,6 @@
-# GRASS VAE-GAN 架构与更新逻辑文档
+# 旧扁平 GRASS VAE-GAN 架构概览
 
-本项目实现了基于递归神经网络（RvNN）的 VAE-GAN 联合训练架构，专门用于生成具有层次化结构的 3D 物体（如飞机、家具）。该架构结合了 VAE 的结构重构能力和 WGAN-GP 的对抗生成能力。
+本文是旧扁平 13D box VAE-GAN 路径的高层概览，`train_GAN.py` 为实验性实现。模型、训练与 typed 路径的实际接入状态以 `docs/aircraft_layout_vae_definitions.md` 为准；typed schema 与翼型编码以 `docs/typed_box_airfoil_encoding.md` 为准。
 
 ## 1. 核心组件架构
 
@@ -26,7 +26,7 @@
 - **类型**: 递归神经网络。
 - **输入**: 根节点特征。
 - **逻辑**: 根据节点类型（Leaf, Adj, Sym）递归地拆分特征。
-    - **Leaf**: 输出 13 维盒子参数（10 几何 + 3 类别）。
+    - **Leaf**: 此文档的自由生成路径输出 13 维扁平盒子参数（10 几何 + 3 类别）。typed 路径按部件使用 payload，翼面为 8D 几何加 30D Bezier 翼型 code，但当前仅支持 teacher-forced 重构。
     - **Adj/Sym**: 输出子节点的特征向量。
 - **输出**: 重构或生成的完整树结构物体。
 

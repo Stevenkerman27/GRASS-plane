@@ -1,40 +1,26 @@
 # GRASS in Pytorch
 This is a Pytorch implementation of the paper "[GRASS: Generative Recursive Autoencoders for Shape Structures](http://kevinkaixu.net/projects/grass.html)". The paper is about learning a generative model for 3D shape structures by structural encoding and decoding with Recursive Neural Networks. This code was originally written by [Chenyang Zhu](http://www.sfu.ca/~cza68/) and is being improved and maintained here in this repository.
 
-Note that the current version implements only the Varational Auto-Encoder (VAE) part of the generative model. The implementation of the Generarive Adverserial Nets (GAN) part is still on-going and will be added once done. But this VAE-based model can already generate novel 3D shape structures from sampled random noises. With the GAN part, the model is expected to generate more diverse structures.
+The repository provides the legacy flat-box VAE training and generation path, plus an experimental WGAN-GP path in `train_GAN.py`. The typed aircraft-box path has encoder and teacher-forced reconstruction support, but is not yet wired into the formal training, GAN, or free-generation entry points. See `docs/aircraft_layout_vae_definitions.md` and `docs/typed_box_airfoil_encoding.md` for the current boundary.
 
 ## Usage
-**Dependancy**
+**Dependencies**
 
-grass_pytorch should be run with Python 3.x and pytorch 2.9
+grass_pytorch should be run with Python 3.x and PyTorch 2.9.
 
 grass_pytorch depends on torchfold which is a pytorch tool developed by [Illia Polosukhin](https://github.com/ilblackdragon). It is used for dynamic batching the computations in a dynamic computation graph. The computations across all nodes of all trees are batched based on their module names and dispatched to GPU for parallelization. 
 
 **Training**
 ```
-python train.py
+python train.py --data_path data --save_path models
 ```
-Arguments:
-```
-'--epochs' (number of epochs; default=300)
-'--batch_size' (batch size; default=123 (the size of the provided training dataset is a multiple of 123))
-'--show_log_every' (show training log for every X frames; default=3)
-'--save_log' (save training log files)
-'--save_log_every' (save training log for every X frames; default=3)
-'--save_snapshot' (save snapshots of trained model)
-'--save_snapshot_every' (save training log for every X frames; default=5)
-'--no_plot' (don't show plots of losses)
-'--no_cuda' (don't use cuda)
-'--gpu' (device id of GPU to run cuda)
-'--data_path' (dataset path, default='data')
-'--save_path' (trained model path, default='models')
-```
+This entry point trains the legacy flat 13D `.mat` dataset. Run `python train.py --help` to read the current arguments and defaults from their source of truth in `util.py`.
 
-**Testing**
+**Generation (legacy flat-box path)**
 ```
-python test.py
+python VAE_gen.py
 ```
-This will sample a random noise vector of the same size as the root code. This random noise will be decoded into a tree structure of boxes and displayed using the utility functions in [draw3dobb.py](https://github.com/kevin-kaixu/grass_pytorch/blob/master/draw3dOBB.py) provided in this project.
+This samples a random root code, decodes it into a legacy 13D box tree, and displays it with `draw3dobb.py`. The OpenVSP and typed-OBB example uses separate environments; see `docs/openvsp_obb_json_visualization.md`.
 
 
 

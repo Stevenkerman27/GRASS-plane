@@ -47,7 +47,7 @@ def main():
     Cl_target = infra.mass * infra.g / (0.5 * infra.density * cruise_spd**2 * wing_S)
 
     infra.ini_geom()
-    infra.create_fuselage(fuselage_pos, fuselage_xsecs, tess_u=8, tess_w=17)
+    infra.create_fuselage(fuselage_pos, fuselage_xsecs, tess_int)
     infra.create_wing(wing_pos, spans, chords, twists, 0.0, tess_int, airfoil_cfg)
 
     wing_cfg = {

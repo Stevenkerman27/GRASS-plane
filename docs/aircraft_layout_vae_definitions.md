@@ -1,6 +1,6 @@
 # 飞行器布局编码与 GRASS VAE 定义
 
-本文档总结当前代码中已经实际实现的飞行器布局编码、VAE 训练、递归 GRASS 模型与 torchfold 适配细节。本文只覆盖 VAE 路径；`train_GAN.py`、`GAN_gen.py`、判别器和 WGAN-GP 训练不作为本文定义来源。
+本文档总结当前代码中已经实际实现的飞行器布局编码、VAE 训练、递归 GRASS 模型与 torchfold 适配细节。它区分仍由正式训练和自由生成入口使用的旧扁平 13D 路径，以及已实现 encoder/teacher-forced decoder smoke test、但尚未接入正式训练或自由生成的 typed 路径。typed schema 与实施状态的权威定义位于 `docs/typed_box_airfoil_encoding.md`。`train_GAN.py`、`GAN_gen.py`、判别器和 WGAN-GP 训练不作为本文定义来源。
 
 ## 1. 权威代码位置
 
@@ -10,7 +10,7 @@
 - VAE 训练入口: `train.py`
 - 模型超参数与损失权重参数: `util.py`
 - torchfold 兼容扩展: `torchfoldext.py`
-- 生成结果可视化与 13 维 box 几何解释: `draw3dobb.py`
+- 传统 13 维 box 的生成结果可视化: `draw3dobb.py`；typed 翼面 OBB 使用 `test/plot_obb.py`。
 - MATLAB 原始格式参考: `Grass-matlab/data/Data Format.txt`
 
 ## 2. 飞行器布局树编码
@@ -47,9 +47,9 @@
 
 注意: 当前 `ADJ` 的两个子节点顺序由 `grassdata.py` 中 `left_node = queue.pop(); right_node = queue.pop()` 决定。文档和后续代码应以这个实现为准，不自行改写左右子树语义。
 
-### 2.3 13 维 box 编码
+### 2.3 旧扁平 13 维 box 编码与 typed 路径
 
-当前飞行器数据使用 `util.py` 中的 `box_code_size = 13`。
+旧的扁平训练路径使用 `util.py` 中的 `box_code_size = 13`。新的 typed box 路径按部件保存 payload：机身和发动机使用 10 维 geometry，翼面使用 8 维 geometry 加 30 维 Bezier 翼型 code；其带类别 one-hot 的扁平导出长度分别为 13D 与 41D。详见 `docs/typed_box_airfoil_encoding.md`。
 
 13 维 box 向量格式为:
 
@@ -152,7 +152,7 @@ boxes[i][j] = boxes[i][j] * 2.0 - 1.0
 
 ### 3.1 全局尺寸参数
 
-当前 `util.py` 默认参数:
+旧扁平路径当前使用的 `util.py` 默认参数:
 
 | 参数 | 默认值 | 用途 |
 | --- | ---: | --- |
@@ -165,16 +165,18 @@ boxes[i][j] = boxes[i][j] * 2.0 - 1.0
 
 ### 3.2 编码器
 
-`GRASSEncoder` 包含:
+`GRASSEncoder` 同时保留旧扁平 head，并实现 typed leaf head:
 
 - `BoxEncoder`: `Linear(box_code_size, feature_size)` + `Tanh`。
+- `fuselageBoxEncoder`、`wingBoxEncoder`、`engineBoxEncoder`: 分别接收机身 10D、翼面 `8D + 30D` 和发动机 10D payload。
 - `AdjEncoder`: 左右子 feature 分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `SymEncoder`: 子 feature 与 symmetry 参数分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `Sampler`: VAE 采样层。
 
 编码递归入口为 `encode_structure_fold(fold, tree, use_sampler=True)`:
 
-- `BOX`: 调用 `boxEncoder(box)`。
+- 旧扁平 `BOX`: 调用 `boxEncoder(box)`。
+- typed `BOX`: 根据 `component` 分派至三个 typed box encoder；翼面额外传入 `airfoil` code。
 - `ADJ`: 递归编码左右子树，再调用 `adjEncoder(left, right)`。
 - `SYM`: 递归编码 generator 子树，再调用 `symEncoder(feature, sym)`。
 - 根节点 feature 默认继续调用 `sampleEncoder(feature)`。
@@ -218,12 +220,14 @@ kl_weight = kl_weight_target * min(1.0, epoch / kl_anneal_epochs)
 
 ### 3.4 解码器
 
-`GRASSDecoder` 包含:
+`GRASSDecoder` 同时保留旧扁平 decoder，并实现 typed teacher-forced decoder:
 
 - `SampleDecoder`: 将 VAE latent `z` 映射回递归解码器根 feature。
 - `AdjDecoder`: 父 feature 解码为左右两个子 feature。
 - `SymDecoder`: 父 feature 解码为 generator 子 feature 与 symmetry 参数。
 - `BoxDecoder`: 父 feature 解码为 13 维 box。
+- `fuselageBoxDecoder`、`wingBoxDecoder`、`engineBoxDecoder`: 分别输出对应 typed payload。
+- `componentClassifier`: 输出 fuselage/wing/engine 三类 logits；不与 `NodeClassifier` 的 `BOX/ADJ/SYM` 分类混用。
 - `NodeClassifier`: 父 feature 分类为 `BOX/ADJ/SYM` 三类 logits。
 
 `BoxDecoder` 的输出规则:
@@ -236,15 +240,15 @@ kl_weight = kl_weight_target * min(1.0, epoch / kl_anneal_epochs)
 1. 先调用 `sampleDecoder(feature)`。
 2. 按 ground truth tree 拓扑递归解码。
 3. 每个节点都计算 node type 分类损失。
-4. `BOX` 节点计算 box 几何损失和类别损失。
+4. 旧扁平 `BOX` 节点计算 13D box 的几何损失和类别损失；typed `BOX` 使用 ground truth component 选择 decoder head，计算 payload 与组件分类损失。
 5. `SYM` 节点计算 symmetry 参数损失，并继续解码 generator 子树。
 6. `ADJ` 节点解码左右子 feature，并继续解码左右子树。
 
-训练时解码拓扑由 ground truth tree 决定；自由生成时拓扑由 `NodeClassifier` 预测决定。
+训练时解码拓扑由 ground truth tree 决定；typed 路径目前只实现此 teacher-forced 重构。自由生成时由 `NodeClassifier` 预测拓扑的实现目前只支持旧扁平 13D box。
 
 ## 4. VAE 损失函数定义
 
-### 4.1 box loss
+### 4.1 旧扁平 13D box loss
 
 `boxLossEstimator(box_feature, gt_box_feature)` 对 batch 内每个 box 分别计算:
 
@@ -262,6 +266,8 @@ box_loss_raw = sum(all_box_losses, dim=0) / batch_size
 geom_loss = box_loss_raw[0]
 cls_loss = box_loss_raw[1]
 ```
+
+typed 路径同样返回两列 `[payload_loss, component_cls_loss]` 以复用该聚合形状；翼面 payload loss 为 8D 几何 MSE 与 30D Bezier code MSE 之和。详细字段、loss 与完成状态以 `docs/typed_box_airfoil_encoding.md` 为准。
 
 ### 4.2 symmetry loss
 
@@ -327,7 +333,7 @@ Adam(decoder.parameters(), lr=1e-3)
 
 ## 5. VAE 训练流程
 
-每个 batch 的训练步骤:
+当前 `train.py` 的旧扁平训练路径中，每个 batch 的步骤为:
 
 1. `DataLoader` 通过自定义 `my_collate` 直接返回 `Tree` 对象列表，避免 PyTorch 默认 collate 破坏树结构。
 2. 创建 `enc_fold = FoldExt(cuda=config.cuda)`。
@@ -348,7 +354,7 @@ Adam(decoder.parameters(), lr=1e-3)
 - 最终解码器: `models/vae_decoder_model.pkl`
 - 可选 snapshot: `models/snapshots_*/vae_*_epoch_*.pkl`
 
-## 6. 自由生成流程
+## 6. 旧扁平路径的自由生成流程
 
 `VAE_gen.py` 当前自由生成步骤:
 
@@ -404,6 +410,9 @@ FoldExt(volatile=False, cuda=False)
 
 - Encoder:
   - `boxEncoder`
+  - `fuselageBoxEncoder`
+  - `wingBoxEncoder`
+  - `engineBoxEncoder`
   - `adjEncoder`
   - `symEncoder`
   - `sampleEncoder`
@@ -412,8 +421,15 @@ FoldExt(volatile=False, cuda=False)
   - `adjDecoder`
   - `symDecoder`
   - `boxDecoder`
+  - `fuselageBoxDecoder`
+  - `wingBoxDecoder`
+  - `engineBoxDecoder`
+  - `componentClassifier`
   - `nodeClassifier`
   - `boxLossEstimator`
+  - `fuselageBoxLossEstimator`
+  - `wingBoxLossEstimator`
+  - `engineBoxLossEstimator`
   - `symLossEstimator`
   - `classifyLossEstimator`
 
@@ -423,10 +439,10 @@ FoldExt(volatile=False, cuda=False)
 
 MATLAB 原始实现使用显式 tree structure、manual forward/backward 和 12 维 OBB 格式。当前 PyTorch 工程已经为飞行器布局做了以下实际改动:
 
-- box 从原始 12 维 OBB 改为当前 13 维飞机部件编码。
+- 旧扁平 box 从原始 12 维 OBB 改为 13 维飞机部件编码；typed box 路径使用部件特定 payload。
 - 树拓扑从 MATLAB `treekids` 形式转为当前 `.mat` 中的后序 `ops` 栈式编码。
 - 反向传播由 PyTorch autograd 与 torchfold 动态批处理负责。
-- VAE 的 KL、重构、节点分类损失在 `train.py` 中统一聚合。
+- 旧扁平 VAE 的 KL、重构、节点分类损失在 `train.py` 中统一聚合；typed loss 尚未接入该正式训练入口。
 
 `Grass-matlab` 是参考实现，按项目约束禁止修改。
 
@@ -434,5 +450,6 @@ MATLAB 原始实现使用显式 tree structure、manual forward/backward 和 12 
 
 - `util.py` 是超参数的集中入口，但当前 `train.py` 仍硬编码 Adam 学习率 `1e-3`，与 `--lr` 参数不一致。
 - 当前 box 几何归一化公式记录为代码事实；若后续需要严格归一到 `[-1, 1]`，应专门审查 `data/generate_dataset.py`。
-- `draw3dobb.py` 的可视化几何不是传统完整 OBB 12 维格式，而是根据当前 10 维几何与 3 维类别绘制飞机部件。
-- 所有后续实现应保持 `BOX/ADJ/SYM`、13 维 box、8 维 symmetry、`fold.add` 模块名的一致性，避免在多个位置手动复制不同定义。
+- `draw3dobb.py` 的可视化几何不是传统完整 OBB 12 维格式，而是根据旧扁平 10 维几何与 3 维类别绘制飞机部件；typed 翼面 OBB 使用 8D geometry 与 30D Bezier code。
+- typed 结构化数据集、encoder 和 teacher-forced decoder 已有单元测试；正式训练、GAN 和自由生成尚未支持 typed component 输出。
+- 所有后续实现应保持 `BOX/ADJ/SYM`、部件特定 typed box schema、8 维 symmetry、`fold.add` 模块名的一致性，避免在多个位置手动复制不同定义。

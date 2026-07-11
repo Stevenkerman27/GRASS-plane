@@ -1,5 +1,49 @@
-import os
 from argparse import ArgumentParser
+
+COMPONENT_FUSELAGE = 0
+COMPONENT_WING = 1
+COMPONENT_ENGINE = 2
+
+COMPONENT_NAMES = {
+    COMPONENT_FUSELAGE: 'fuselage',
+    COMPONENT_WING: 'wing',
+    COMPONENT_ENGINE: 'engine',
+}
+
+BOX_COMPONENT_KEY = 'component'
+BOX_GEOMETRY_KEY = 'geometry'
+BOX_AIRFOIL_KEY = 'airfoil'
+
+FUSELAGE_GEOMETRY_SIZE = 10
+ENGINE_GEOMETRY_SIZE = 10
+WING_GEOMETRY_SIZE = 8
+AIRFOIL_BEZIER_CODE_SIZE = 30
+COMPONENT_CLASS_SIZE = 3
+STANDARD_OBB_BOX_SIZE = FUSELAGE_GEOMETRY_SIZE + COMPONENT_CLASS_SIZE
+WING_OBB_BOX_SIZE = WING_GEOMETRY_SIZE + AIRFOIL_BEZIER_CODE_SIZE + COMPONENT_CLASS_SIZE
+AIRFOIL_SURFACE_CONTROL_POINTS = 5
+AIRFOIL_DEFAULT_OUTPUT_POINTS = 100
+AIRFOIL_DEFAULT_POINT_DENSITY_BETA = 1.3
+AIRFOIL_UPPER_SURFACE = 'upper'
+AIRFOIL_LOWER_SURFACE = 'lower'
+
+COMPONENT_GEOMETRY_SIZES = {
+    COMPONENT_FUSELAGE: FUSELAGE_GEOMETRY_SIZE,
+    COMPONENT_WING: WING_GEOMETRY_SIZE,
+    COMPONENT_ENGINE: ENGINE_GEOMETRY_SIZE,
+}
+
+
+def component_name(component):
+    if component not in COMPONENT_NAMES:
+        raise ValueError(f"Unknown component type: {component}")
+    return COMPONENT_NAMES[component]
+
+
+def component_one_hot(component):
+    component_name(component)
+    return [float(component == index) for index in range(COMPONENT_CLASS_SIZE)]
+
 
 def get_args():
     parser = ArgumentParser(description='grass_pytorch')
