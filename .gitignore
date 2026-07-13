@@ -6,3 +6,4 @@ data/conventional_dataset/conventional_dataset.pt
 data/airfoil_code_cache.pt
 data/conventional_dataset
 Grass-matlab/
+.vscode/
