@@ -1,6 +1,6 @@
 # OpenVSP 与 OBB 可视化流程
 
-本文档记录 `test/create_obb_vsp.py` 和 `test/plot_obb.py` 的职责边界。`vsppytools` 环境没有 PyTorch 和 matplotlib 3D，因此 OpenVSP 生成与 Bezier 拟合/绘图必须拆成两个 Python 进程运行。
+本文档记录单机 OpenVSP 验证脚本与当前批量 OBB 数据集可视化的职责边界。`vsppytools` 环境没有 PyTorch 和 matplotlib 3D，因此 OpenVSP 生成与结构化 `.pt` 读取必须在两个 Python 环境中运行。
 
 ## 1. OpenVSP 生成
 
@@ -33,30 +33,30 @@ D:\Software\anaconda\envs\vsppytools\python.exe test\create_obb_vsp.py
 
 该脚本不导入 PyTorch 或 matplotlib，不会尝试拟合 Bezier code。
 
-## 2. OBB 绘图
+批量数据集使用 `data/aircraft_dataset_common.py` 的 `conventional_twin_engine_dataset_v2` schema：主翼、垂尾、平尾的根和尖截面各保存一个来源文件。垂尾在 OpenVSP 写入前从来源上表面构造严格镜像的对称翼型；对应的 OBB 根/尖 code 也应用相同约束。单机旧验证脚本仍使用自己的 `conventional_geometry_v1` 中间 JSON，不能和批量 v2 JSON 混用。
 
-`test/plot_obb.py` 必须在 `myml` 环境运行。它读取中间 JSON，并直接调用项目内的 `airfoil_codec.encode_processed_airfoil_dat(...)`：
+## 2. 数据集 OBB 绘图
 
-- 读取 `airfoil_source` 的 `.dat` 坐标。
-- 使用 `airfoil_codec.py` 中集中定义的优化拟合参数、坐标归一化和学习率调度器。
-- 在内存中构造 typed OBB：机身/发动机为 13D `[geometry10, class3]`，翼面为 41D `[geometry8, bezier30, class3]`。
-- 绘制椭圆机身和发动机短舱、平面翼面轮廓。当前不从 30D code 重建翼型曲线。
+`data/visualize_dataset.py` 是当前的交互式 OBB 可视化入口，必须在 `myml` 环境运行。它直接读取 `data/conventional_dataset/conventional_dataset.pt`，随机选择一个结构化样本并由 `SYM` 节点展开完整飞机：
 
-该步骤不写最终 OBB JSON 或 `.pt` 文件；每次绘图都会重新拟合源翼型，避免缓存的 code 与当前 `.vsp3` 或 `.dat` 文件不一致。
+- 机身和发动机绘制为椭圆截面；翼面绘制为梯形平面轮廓。
+- 只支持当前固定常规构型使用的镜像 `SYM` 节点；遇到其他对称类型会直接报错。
+- 不重新读取 `.dat` 或拟合 Bezier code，因此弹出窗口前不需要进行翼型优化。
 
 运行：
 
 ```powershell
-D:\Software\anaconda\envs\myml\python.exe test\plot_obb.py --device cpu
+D:\Software\anaconda\envs\myml\python.exe data\visualize_dataset.py
 ```
 
 可选参数：
 
 ```powershell
-D:\Software\anaconda\envs\myml\python.exe test\plot_obb.py --json outputs\conventional_openvsp_obb\conventional_geometry.json --device cuda
+D:\Software\anaconda\envs\myml\python.exe data\visualize_dataset.py --index 17
+D:\Software\anaconda\envs\myml\python.exe data\visualize_dataset.py --seed 20260711
 ```
 
-绘图脚本会对中间 JSON schema、部件几何维度、Bezier code 长度和组件 one-hot 长度进行 fail-fast 校验。
+批量生成、JSON-to-PT 转换和数据文件位置详见 `docs/conventional_dataset_generation.md`。单机 JSON 仍是 `test/create_obb_vsp.py` 的中间验证产物，不再有独立的 JSON 绘图入口。
 
 ## 3. OpenVSP 机身和短舱
 

@@ -8,14 +8,14 @@
 GRASS topology: BOX / ADJ / SYM
 BOX payload:
   fuselage -> fuselage geometry
-  wing     -> wing geometry + airfoil Bezier code
+  wing     -> wing geometry + root/tip airfoil Bezier codes
   engine   -> engine geometry
 ```
 
 当前几何维度定义为：机身和发动机各使用 10 维几何参数；翼面使用 8 维几何参数
-`[x1, y1, z1, x2, y2, z2, root_chord, tip_chord]`，其原有的两项相对厚度由 30 维
-Bezier 翼型编码取代。若导出带类别 one-hot 的扁平 OBB 向量，则机身/发动机为 13 维，
-翼面为 41 维。
+`[x1, y1, z1, x2, y2, z2, root_chord, tip_chord]`，其原有的两项相对厚度由根、尖各一组
+30 维 Bezier 翼型编码取代。若导出带类别 one-hot 的扁平 OBB 向量，则机身/发动机为 13 维，
+翼面为 71 维。
 
 ## 1. 设计原则
 
@@ -75,7 +75,7 @@ COMPONENT_ENGINE = 2
 ]
 ```
 
-这里的 `.pt` 仅指未来 typed 训练数据集的结构化载体。`test/create_obb_vsp.py` 到 `test/plot_obb.py` 的示例流程继续使用 JSON 传递 OpenVSP 几何；该 JSON 不保存 Bezier code，绘图进程会即时拟合，详见 `docs/openvsp_obb_json_visualization.md`。
+这里的 `.pt` 是 typed 训练数据集的结构化载体。当前固定常规数据集先在 `vsppytools` 中为每架飞机写出 JSON 与 `.vsp3`，再由 `data/json_to_typed_obb_dataset.py` 在 `myml` 中拟合翼型并写入 `data/conventional_dataset/conventional_dataset.pt`。`data/visualize_dataset.py` 直接读取该 `.pt`，不在绘图时重新拟合。详见 `docs/conventional_dataset_generation.md`。
 
 使用 plain `dict/list/tensor/int`，避免在 `torch.save` 中序列化自定义 dataclass。这样更容易配合 `torch.load(..., weights_only=True)`，也减少跨文件反序列化耦合。
 
@@ -211,7 +211,7 @@ upper control points + lower control points + upper weights + lower weights
 surface_control_points = 5
 ```
 
-完整编码维度为:
+单个截面的完整编码维度为:
 
 ```text
 upper cp:    5 * 2 = 10
@@ -221,7 +221,7 @@ lower weight: 5
 total: 30
 ```
 
-第一版建议保存完整 30 维，不压缩固定尾缘或重复前缘。理由是实现简单、可视化验证直接、减少手动同步规则。若后续需要降维，再把压缩规则集中写入 `airfoil_codec.py`。
+每个翼面按 `[root_code, tip_code]` 拼接，故训练 payload 使用 60D。单截面仍保存完整 30 维，不压缩固定尾缘或重复前缘。垂尾的两个单截面 code 从各自上表面严格构造下表面：控制点反序后围绕物理 `y=0` 弦线镜像，权重反序；这避免了把方向相反的上下表面控制数组直接设为相等而导致退化轮廓。
 
 ## 9. 外部代码与神经网络调用
 

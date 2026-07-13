@@ -81,6 +81,20 @@ def test_encode_airfoil_dat_runs_short_fit(tmp_path):
     assert torch.all(torch.isfinite(result['code']))
 
 
+def test_symmetric_airfoil_code_mirrors_upper_surface_exactly():
+    code = airfoil_codec.symmetric_airfoil_code_from_upper(build_simple_code(), symmetry_line_y=0.0)
+    surfaces = airfoil_codec.unpack_split_airfoil_code(code)
+    upper = surfaces[util.AIRFOIL_UPPER_SURFACE]['control_points']
+    lower = surfaces[util.AIRFOIL_LOWER_SURFACE]['control_points']
+    upper_weights = surfaces[util.AIRFOIL_UPPER_SURFACE]['weights']
+    lower_weights = surfaces[util.AIRFOIL_LOWER_SURFACE]['weights']
+
+    expected_lower = torch.flip(upper, dims=(0,)).clone()
+    expected_lower[:, 1] *= -1.0
+    assert torch.equal(lower, expected_lower)
+    assert torch.equal(lower_weights, torch.flip(upper_weights, dims=(0,)))
+
+
 def test_fit_config_requires_all_keys():
     config = build_fit_config()
     del config['lr']

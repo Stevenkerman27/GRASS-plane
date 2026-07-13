@@ -110,7 +110,7 @@ def _validate_structured_box(box, box_index):
             raise KeyError(f"wing boxes[{box_index}] missing required key: {util.BOX_AIRFOIL_KEY}")
         structured_box[util.BOX_AIRFOIL_KEY] = _as_row_tensor(
             box[util.BOX_AIRFOIL_KEY],
-            util.AIRFOIL_BEZIER_CODE_SIZE,
+            util.WING_AIRFOIL_CODE_SIZE,
             f"boxes[{box_index}].{util.BOX_AIRFOIL_KEY}",
         )
     elif has_airfoil:

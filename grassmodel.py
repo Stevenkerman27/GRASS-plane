@@ -78,7 +78,7 @@ class GRASSEncoder(nn.Module):
         super(GRASSEncoder, self).__init__()
         self.box_encoder = BoxEncoder(input_size = config.box_code_size, feature_size = config.feature_size)
         self.fuselage_box_encoder = BoxEncoder(input_size = util.FUSELAGE_GEOMETRY_SIZE, feature_size = config.feature_size)
-        self.wing_box_encoder = BoxEncoder(input_size = util.WING_GEOMETRY_SIZE + util.AIRFOIL_BEZIER_CODE_SIZE, feature_size = config.feature_size)
+        self.wing_box_encoder = BoxEncoder(input_size = util.WING_GEOMETRY_SIZE + util.WING_AIRFOIL_CODE_SIZE, feature_size = config.feature_size)
         self.engine_box_encoder = BoxEncoder(input_size = util.ENGINE_GEOMETRY_SIZE, feature_size = config.feature_size)
         self.adj_encoder = AdjEncoder(feature_size = config.feature_size, hidden_size = config.hidden_size)
         self.sym_encoder = SymEncoder(feature_size = config.feature_size, symmetry_size = config.symmetry_size, hidden_size = config.hidden_size)
@@ -249,7 +249,7 @@ class GRASSDecoder(nn.Module):
         )
         self.wing_box_decoder = TypedBoxDecoder(
             feature_size = config.feature_size,
-            output_size = util.WING_GEOMETRY_SIZE + util.AIRFOIL_BEZIER_CODE_SIZE,
+            output_size = util.WING_GEOMETRY_SIZE + util.WING_AIRFOIL_CODE_SIZE,
             tanh_size = util.WING_GEOMETRY_SIZE,
         )
         self.engine_box_decoder = TypedBoxDecoder(

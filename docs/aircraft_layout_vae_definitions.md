@@ -10,7 +10,7 @@
 - VAE 训练入口: `train.py`
 - 模型超参数与损失权重参数: `util.py`
 - torchfold 兼容扩展: `torchfoldext.py`
-- 传统 13 维 box 的生成结果可视化: `draw3dobb.py`；typed 翼面 OBB 使用 `test/plot_obb.py`。
+- 传统 13 维 box 的生成结果可视化: `draw3dobb.py`；固定构型 typed OBB 数据集使用 `data/visualize_dataset.py`。
 - MATLAB 原始格式参考: `Grass-matlab/data/Data Format.txt`
 
 ## 2. 飞行器布局树编码
@@ -49,7 +49,7 @@
 
 ### 2.3 旧扁平 13 维 box 编码与 typed 路径
 
-旧的扁平训练路径使用 `util.py` 中的 `box_code_size = 13`。新的 typed box 路径按部件保存 payload：机身和发动机使用 10 维 geometry，翼面使用 8 维 geometry 加 30 维 Bezier 翼型 code；其带类别 one-hot 的扁平导出长度分别为 13D 与 41D。详见 `docs/typed_box_airfoil_encoding.md`。
+旧的扁平训练路径使用 `util.py` 中的 `box_code_size = 13`。新的 typed box 路径按部件保存 payload：机身和发动机使用 10 维 geometry，翼面使用 8 维 geometry 加根、尖各 30 维 Bezier 翼型 code；其带类别 one-hot 的扁平导出长度分别为 13D 与 71D。详见 `docs/typed_box_airfoil_encoding.md`。
 
 13 维 box 向量格式为:
 
@@ -168,7 +168,7 @@ boxes[i][j] = boxes[i][j] * 2.0 - 1.0
 `GRASSEncoder` 同时保留旧扁平 head，并实现 typed leaf head:
 
 - `BoxEncoder`: `Linear(box_code_size, feature_size)` + `Tanh`。
-- `fuselageBoxEncoder`、`wingBoxEncoder`、`engineBoxEncoder`: 分别接收机身 10D、翼面 `8D + 30D` 和发动机 10D payload。
+- `fuselageBoxEncoder`、`wingBoxEncoder`、`engineBoxEncoder`: 分别接收机身 10D、翼面 `8D + 60D` 和发动机 10D payload。
 - `AdjEncoder`: 左右子 feature 分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `SymEncoder`: 子 feature 与 symmetry 参数分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `Sampler`: VAE 采样层。

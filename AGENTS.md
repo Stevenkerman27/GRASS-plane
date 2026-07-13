@@ -1,7 +1,7 @@
 Chinese character involved in this project, mind encoding!
 使用myml python环境,位于D:\Software\anaconda\envs\myml. torch版本为2.9.0+cu128
 工作目录中是fork的别人的生成递归编码器框架。我需要你帮我完善代码并扩充，以用于飞行器布局的生成
-Grass-matlab中是作者的原始matlab实现，禁止修改，不要commit，鼓励查询并参考
+Grass-matlab中是作者的原始matlab实现，禁止修改，鼓励查询并参考
 mistakes部分中记录了过去常犯的错误，必须阅读保证不再犯错。如果有新的frequent mistake同样记录在mistakes部分中
 
 开发规则：

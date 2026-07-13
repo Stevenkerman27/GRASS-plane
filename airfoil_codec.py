@@ -7,6 +7,7 @@ import torch.optim as optim
 import util
 
 
+PROCESSED_AIRFOIL_ENCODING_VERSION = "split_rational_bezier_v1"
 FIT_CONFIG_KEYS = (
     'iterations',
     'lr',
@@ -301,6 +302,41 @@ def unpack_split_airfoil_code(code):
             'weights': lower_weights,
         },
     }
+
+
+def symmetric_airfoil_code_from_upper(airfoil_code, symmetry_line_y):
+    """Mirror the encoded upper surface into the lower surface exactly.
+
+    Split codes traverse upper TE-to-LE and lower LE-to-TE. Therefore the
+    lower controls and weights must be reversed before reflecting their y
+    coordinates about the physical chord line represented in normalized space.
+    """
+    surfaces = unpack_split_airfoil_code(airfoil_code)
+    upper_control_points = surfaces[util.AIRFOIL_UPPER_SURFACE]['control_points']
+    upper_weights = surfaces[util.AIRFOIL_UPPER_SURFACE]['weights']
+    lower_control_points = torch.flip(upper_control_points, dims=(-2,)).clone()
+    lower_control_points[..., 1] = (
+        2.0 * torch.as_tensor(
+            symmetry_line_y,
+            dtype=lower_control_points.dtype,
+            device=lower_control_points.device,
+        )
+        - lower_control_points[..., 1]
+    )
+    lower_weights = torch.flip(upper_weights, dims=(-1,))
+    return pack_split_airfoil_code(
+        upper_control_points,
+        lower_control_points,
+        upper_weights,
+        lower_weights,
+    )
+
+
+def normalized_y_coordinate(y_value, coord_norm):
+    validate_coord_norm(coord_norm)
+    y_min = torch.as_tensor(coord_norm['y_min'], dtype=torch.float32)
+    y_max = torch.as_tensor(coord_norm['y_max'], dtype=torch.float32)
+    return (torch.as_tensor(y_value, dtype=torch.float32) - y_min) / (y_max - y_min + 1e-8)
 
 
 def _unpack_batched_split_airfoil_code(code):

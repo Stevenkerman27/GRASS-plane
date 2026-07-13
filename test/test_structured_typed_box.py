@@ -26,7 +26,7 @@ def build_structured_sample():
             {
                 util.BOX_COMPONENT_KEY: util.COMPONENT_WING,
                 util.BOX_GEOMETRY_KEY: torch.ones(util.WING_GEOMETRY_SIZE),
-                util.BOX_AIRFOIL_KEY: torch.zeros(util.AIRFOIL_BEZIER_CODE_SIZE),
+                util.BOX_AIRFOIL_KEY: torch.zeros(util.WING_AIRFOIL_CODE_SIZE),
             },
             {
                 util.BOX_COMPONENT_KEY: util.COMPONENT_ENGINE,
@@ -103,6 +103,14 @@ def test_structured_wing_requires_airfoil():
     del sample["boxes"][1][util.BOX_AIRFOIL_KEY]
 
     with pytest.raises(KeyError, match="missing required key"):
+        Tree.from_structured_sample(sample)
+
+
+def test_structured_wing_requires_root_and_tip_airfoil_codes():
+    sample = build_structured_sample()
+    sample["boxes"][1][util.BOX_AIRFOIL_KEY] = torch.zeros(util.AIRFOIL_BEZIER_CODE_SIZE)
+
+    with pytest.raises(ValueError, match=rf"\[1, {util.WING_AIRFOIL_CODE_SIZE}\]"):
         Tree.from_structured_sample(sample)
 
 
