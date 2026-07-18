@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 import aircraft_dataset_common as common
 
 
-DEFAULT_AIRFOIL_DIR = Path(r"D:\3D\Projects\ML\NN\foildata\processed_foil")
+DEFAULT_AIRFOIL_DIR = REPO_ROOT / "foildata" / "processed_foil"
 
 
 def parse_args():

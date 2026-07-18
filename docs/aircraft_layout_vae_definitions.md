@@ -49,7 +49,7 @@
 
 ### 2.3 旧扁平 13 维 box 编码与 typed 路径
 
-旧的扁平训练路径使用 `util.py` 中的 `box_code_size = 13`。新的 typed box 路径按部件保存 payload：机身和发动机使用 10 维 geometry，翼面使用 8 维 geometry 加根、尖各 30 维 Bezier 翼型 code；其带类别 one-hot 的扁平导出长度分别为 13D 与 71D。详见 `docs/typed_box_airfoil_encoding.md`。
+旧的扁平训练路径使用 `util.py` 中的 `box_code_size = 13`。新的 typed box 路径按部件保存 payload：机身和发动机使用 10 维 geometry，翼面使用 8 维 geometry 加根、尖各 24 维 CST 翼型 code；其带类别 one-hot 的扁平导出长度分别为 13D 与 59D。详见 `docs/typed_box_airfoil_encoding.md`。
 
 13 维 box 向量格式为:
 
@@ -168,7 +168,7 @@ boxes[i][j] = boxes[i][j] * 2.0 - 1.0
 `GRASSEncoder` 同时保留旧扁平 head，并实现 typed leaf head:
 
 - `BoxEncoder`: `Linear(box_code_size, feature_size)` + `Tanh`。
-- `fuselageBoxEncoder`、`wingBoxEncoder`、`engineBoxEncoder`: 分别接收机身 10D、翼面 `8D + 60D` 和发动机 10D payload。
+- `fuselageBoxEncoder`、`wingBoxEncoder`、`engineBoxEncoder`: 分别接收机身 10D、翼面 `8D + 48D` 和发动机 10D payload。
 - `AdjEncoder`: 左右子 feature 分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `SymEncoder`: 子 feature 与 symmetry 参数分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `Sampler`: VAE 采样层。
@@ -267,7 +267,7 @@ geom_loss = box_loss_raw[0]
 cls_loss = box_loss_raw[1]
 ```
 
-typed 路径同样返回两列 `[payload_loss, component_cls_loss]` 以复用该聚合形状；翼面 payload loss 为 8D 几何 MSE 与 30D Bezier code MSE 之和。详细字段、loss 与完成状态以 `docs/typed_box_airfoil_encoding.md` 为准。
+typed 路径同样返回两列 `[payload_loss, component_cls_loss]` 以复用该聚合形状；翼面 payload loss 为 8D 几何 MSE 与 24D CST code MSE 之和。详细字段、loss 与完成状态以 `docs/typed_box_airfoil_encoding.md` 为准。
 
 ### 4.2 symmetry loss
 
@@ -450,6 +450,6 @@ MATLAB 原始实现使用显式 tree structure、manual forward/backward 和 12 
 
 - `util.py` 是超参数的集中入口，但当前 `train.py` 仍硬编码 Adam 学习率 `1e-3`，与 `--lr` 参数不一致。
 - 当前 box 几何归一化公式记录为代码事实；若后续需要严格归一到 `[-1, 1]`，应专门审查 `data/generate_dataset.py`。
-- `draw3dobb.py` 的可视化几何不是传统完整 OBB 12 维格式，而是根据旧扁平 10 维几何与 3 维类别绘制飞机部件；typed 翼面 OBB 使用 8D geometry 与 30D Bezier code。
+- `draw3dobb.py` 的可视化几何不是传统完整 OBB 12 维格式，而是根据旧扁平 10 维几何与 3 维类别绘制飞机部件；typed 翼面 OBB 使用 8D geometry 与 24D CST code。
 - typed 结构化数据集、encoder 和 teacher-forced decoder 已有单元测试；正式训练、GAN 和自由生成尚未支持 typed component 输出。
 - 所有后续实现应保持 `BOX/ADJ/SYM`、部件特定 typed box schema、8 维 symmetry、`fold.add` 模块名的一致性，避免在多个位置手动复制不同定义。

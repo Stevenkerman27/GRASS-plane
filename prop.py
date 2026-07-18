@@ -1,8 +1,8 @@
-from pathlib import Path
 import sys
 
+from project_paths import SHARED_AIRCRAFT_TOOLS_ROOT
 
-_SHARED_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "aircraft-tools"
+_SHARED_PACKAGE_ROOT = SHARED_AIRCRAFT_TOOLS_ROOT
 
 if not _SHARED_PACKAGE_ROOT.exists():
     raise FileNotFoundError(

@@ -14,8 +14,8 @@ DATA_DIR = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import airfoil_code_cache
-import airfoil_codec
+import cst_airfoil_code_cache
+import cst_airfoil_codec
 import grassdata
 import util
 import aircraft_dataset_common as common
@@ -25,7 +25,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Convert conventional geometry JSON files to structured OBB .pt data.")
     parser.add_argument("--input-dir", type=Path, default=DATA_DIR / "conventional_dataset")
     parser.add_argument("--output", type=Path, default=DATA_DIR / "conventional_dataset" / "conventional_dataset.pt")
-    parser.add_argument("--cache", type=Path, default=DATA_DIR / "airfoil_code_cache.pt")
+    parser.add_argument("--cache", type=Path, default=DATA_DIR / "cst_airfoil_code_cache.pt")
     parser.add_argument("--expected-count", type=int, default=200)
     return parser.parse_args()
 
@@ -34,7 +34,7 @@ def component_airfoil_code(component_name, section_sources, airfoil_cache, symme
     section_codes = []
     for section_name in common.WING_AIRFOIL_SECTIONS:
         source_path = section_sources[section_name]
-        code = airfoil_code_cache.lookup_code(airfoil_cache, source_path)
+        code = cst_airfoil_code_cache.lookup_code(airfoil_cache, source_path)
         if code is None:
             raise KeyError(
                 f"Airfoil cache lacks {source_path} for {component_name}.{section_name}. "
@@ -42,7 +42,7 @@ def component_airfoil_code(component_name, section_sources, airfoil_cache, symme
             )
         code = torch.as_tensor(code, dtype=torch.float32)
         if component_name == "vertical_tail":
-            code = airfoil_codec.symmetric_airfoil_code_from_upper(code, symmetry_line_y)
+            code = cst_airfoil_codec.symmetric_airfoil_code_from_upper(code, symmetry_line_y)
         section_codes.append(code)
     airfoil_code = torch.cat(section_codes)
     if airfoil_code.numel() != util.WING_AIRFOIL_CODE_SIZE:
@@ -94,12 +94,10 @@ def main():
     payloads = load_payloads(args.input_dir)
     if len(payloads) != args.expected_count:
         raise ValueError(f"Expected {args.expected_count} JSON samples, found {len(payloads)}")
-    airfoil_cache = airfoil_code_cache.load_cache(args.cache)
-    coord_norm = airfoil_codec.load_coord_norm(airfoil_codec.DEFAULT_COORD_NORM_PATH)
-    symmetry_line_y = airfoil_codec.normalized_y_coordinate(0.0, coord_norm)
+    airfoil_cache = cst_airfoil_code_cache.load_cache(args.cache)
     samples = []
     for payload in payloads:
-        sample = build_structured_sample(payload, airfoil_cache, symmetry_line_y)
+        sample = build_structured_sample(payload, airfoil_cache, symmetry_line_y=0.0)
         grassdata.validate_structured_sample(sample)
         samples.append(sample)
         print(f"[{payload['sample_index']:04d}] encoded six wing sections", flush=True)

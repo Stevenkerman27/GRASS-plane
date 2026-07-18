@@ -108,7 +108,7 @@ def test_structured_wing_requires_airfoil():
 
 def test_structured_wing_requires_root_and_tip_airfoil_codes():
     sample = build_structured_sample()
-    sample["boxes"][1][util.BOX_AIRFOIL_KEY] = torch.zeros(util.AIRFOIL_BEZIER_CODE_SIZE)
+    sample["boxes"][1][util.BOX_AIRFOIL_KEY] = torch.zeros(util.CST_AIRFOIL_CODE_SIZE)
 
     with pytest.raises(ValueError, match=rf"\[1, {util.WING_AIRFOIL_CODE_SIZE}\]"):
         Tree.from_structured_sample(sample)
@@ -116,7 +116,7 @@ def test_structured_wing_requires_root_and_tip_airfoil_codes():
 
 def test_structured_non_wing_rejects_airfoil():
     sample = build_structured_sample()
-    sample["boxes"][0][util.BOX_AIRFOIL_KEY] = torch.zeros(util.AIRFOIL_BEZIER_CODE_SIZE)
+    sample["boxes"][0][util.BOX_AIRFOIL_KEY] = torch.zeros(util.CST_AIRFOIL_CODE_SIZE)
 
     with pytest.raises(KeyError, match="must not define"):
         Tree.from_structured_sample(sample)

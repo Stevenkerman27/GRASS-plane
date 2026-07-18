@@ -8,8 +8,8 @@
 
 - 构造 conventional aircraft 的参考几何，其中机身以 `fuselage_nose`、`fuselage_center`、`fuselage_tail` 三个连续叶节点表示；机翼、机身和短舱都传入同一个 `tess_int=0.025`，以保持 OpenVSP 网格尺度一致。
 - 在 `vsppytools` 环境中生成 OpenVSP 半模 `.vsp3`。
-- 使用 `D:\3D\Projects\ML\NN\foildata\processed_foil\_falcon.dat` 作为主翼、垂尾和平尾的文件翼型。
-- 写出不含 Bezier code 的中间几何 JSON。
+- 使用本项目 `foildata/processed_foil/_falcon.dat` 作为主翼、垂尾和平尾的文件翼型。
+- 写出不含 CST code 的中间几何 JSON。
 
 默认输出：
 
@@ -22,7 +22,7 @@ outputs/conventional_openvsp_obb/conventional_geometry.json
 
 - `half_components`：与 GRASS 后序 `BOX` 节点顺序一致的半机部件几何。机身和发动机为 10D；翼面为 8D `[x1, y1, z1, x2, y2, z2, root_chord, tip_chord]`。
 - `full_draw_components`：补齐左右对称部件的完整飞机几何。
-- `airfoil_source`：OpenVSP 与 Bezier 拟合共用的 `.dat` 文件。
+- `airfoil_source`：OpenVSP 与 CST 拟合共用的 `.dat` 文件。
 - `box_order`、`full_draw_box_order`、`ops`、`syms`：部件顺序和树拓扑。
 
 运行：
@@ -31,7 +31,7 @@ outputs/conventional_openvsp_obb/conventional_geometry.json
 D:\Software\anaconda\envs\vsppytools\python.exe test\create_obb_vsp.py
 ```
 
-该脚本不导入 PyTorch 或 matplotlib，不会尝试拟合 Bezier code。
+该脚本不导入 PyTorch 或 matplotlib，不会尝试拟合 CST code。
 
 批量数据集使用 `data/aircraft_dataset_common.py` 的 `conventional_twin_engine_dataset_v2` schema：主翼、垂尾、平尾的根和尖截面各保存一个来源文件。垂尾在 OpenVSP 写入前从来源上表面构造严格镜像的对称翼型；对应的 OBB 根/尖 code 也应用相同约束。单机旧验证脚本仍使用自己的 `conventional_geometry_v1` 中间 JSON，不能和批量 v2 JSON 混用。
 
@@ -41,7 +41,7 @@ D:\Software\anaconda\envs\vsppytools\python.exe test\create_obb_vsp.py
 
 - 机身和发动机绘制为椭圆截面；翼面绘制为梯形平面轮廓。
 - 只支持当前固定常规构型使用的镜像 `SYM` 节点；遇到其他对称类型会直接报错。
-- 不重新读取 `.dat` 或拟合 Bezier code，因此弹出窗口前不需要进行翼型优化。
+- 不重新读取 `.dat` 或拟合 CST code，因此弹出窗口前不需要进行翼型优化。
 
 运行：
 
