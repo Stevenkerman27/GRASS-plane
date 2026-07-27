@@ -1,4 +1,4 @@
-"""Generate fixed-topology OpenVSP aircraft and matching geometry JSON files."""
+"""Generate OpenVSP flying-wing samples and matching geometry JSON files."""
 
 from __future__ import annotations
 
@@ -10,21 +10,24 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(__file__).resolve().parent
+DEFAULT_AIRFOIL_DIR = REPO_ROOT / "foildata" / "processed_foil"
+DEFAULT_OUTPUT_DIR = DATA_DIR / "flying_wing_dataset"
+DEFAULT_ROOT_SEED = 20260711
+
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import aircraft_dataset_common as common
 
-
-DEFAULT_AIRFOIL_DIR = REPO_ROOT / "foildata" / "processed_foil"
+DEFAULT_SAMPLE_COUNT = common.DATASET_SAMPLE_COUNT
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate fixed conventional OpenVSP aircraft samples.")
-    parser.add_argument("--output-dir", type=Path, default=DATA_DIR / "conventional_dataset")
+    parser = argparse.ArgumentParser(description="Generate flying-wing OpenVSP and JSON samples.")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--airfoil-dir", type=Path, default=DEFAULT_AIRFOIL_DIR)
-    parser.add_argument("--count", type=int, default=200)
-    parser.add_argument("--seed", type=int, default=20260711)
+    parser.add_argument("--count", type=int, default=DEFAULT_SAMPLE_COUNT)
+    parser.add_argument("--seed", type=int, default=DEFAULT_ROOT_SEED)
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -47,17 +50,16 @@ def generate_sample(output_dir, airfoils, root_seed, sample_index, overwrite):
     seed = sample_seed(root_seed, sample_index)
     rng = random.Random(seed)
     reference = common.build_random_reference(rng)
-    wing_airfoil_sources = common.sample_wing_airfoil_sources(rng, airfoils)
+    wing_airfoil_sources = common.sample_wing_airfoil_sources(reference, rng, airfoils)
+    wing_sections = common.build_wing_sections(reference, wing_airfoil_sources, rng)
     assembler = common.build_obb_tree(reference)
     sample_name = f"sample_{sample_index:04d}"
     vsp_path = output_dir / f"{sample_name}.vsp3"
     json_path = output_dir / f"{sample_name}.json"
     if (vsp_path.exists() or json_path.exists()) and not overwrite:
         raise FileExistsError(f"Sample output already exists; use --overwrite to replace it: {sample_name}")
-    common.create_openvsp_aircraft(reference, wing_airfoil_sources, vsp_path)
-    payload = common.build_geometry_payload(
-        reference, assembler, sample_index, seed, wing_airfoil_sources
-    )
+    common.create_openvsp_aircraft(reference, wing_sections, vsp_path)
+    payload = common.build_geometry_payload(reference, assembler, sample_index, seed, wing_sections)
     common.write_geometry_payload(payload, json_path)
     return vsp_path, json_path
 

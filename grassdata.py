@@ -75,6 +75,24 @@ def _as_row_tensor(value, expected_size, field_name):
     return tensor
 
 
+def _as_component_sections(value, component, field_name):
+    tensor = torch.as_tensor(value, dtype=torch.float32)
+    expected_shape = (util.MAX_SECTION_COUNT, util.COMPONENT_SECTION_SIZES[component])
+    if tuple(tensor.shape) != expected_shape:
+        raise ValueError(f'{field_name} must have shape {list(expected_shape)}, got {list(tensor.shape)}')
+    if not torch.isfinite(tensor).all():
+        raise ValueError(f'{field_name} must contain only finite values')
+    return tensor.unsqueeze(0)
+
+
+def _as_section_count(value, field_name):
+    tensor = torch.as_tensor(value, dtype=torch.long).reshape(-1)
+    if tensor.numel() != 1:
+        raise ValueError(f'{field_name} must contain exactly one value, got {tensor.numel()}')
+    util.section_mask(tensor)
+    return tensor
+
+
 def _component_from_value(value):
     if isinstance(value, torch.Tensor):
         if value.numel() != 1:
@@ -89,33 +107,49 @@ def _component_from_value(value):
 def _validate_structured_box(box, box_index):
     if not isinstance(box, dict):
         raise TypeError(f"boxes[{box_index}] must be dict, got {type(box).__name__}")
-    for key in (util.BOX_COMPONENT_KEY, util.BOX_GEOMETRY_KEY):
-        if key not in box:
-            raise KeyError(f"boxes[{box_index}] missing required key: {key}")
+    if "component" not in box:
+        raise KeyError(f"boxes[{box_index}] missing required key: {"component"}")
 
-    component = _component_from_value(box[util.BOX_COMPONENT_KEY])
-    geometry_size = util.COMPONENT_GEOMETRY_SIZES[component]
-    structured_box = {
-        util.BOX_COMPONENT_KEY: component,
-        util.BOX_GEOMETRY_KEY: _as_row_tensor(
-            box[util.BOX_GEOMETRY_KEY],
-            geometry_size,
-            f"boxes[{box_index}].{util.BOX_GEOMETRY_KEY}",
-        ),
-    }
-
-    has_airfoil = util.BOX_AIRFOIL_KEY in box
-    if component == util.COMPONENT_WING:
-        if not has_airfoil:
-            raise KeyError(f"wing boxes[{box_index}] missing required key: {util.BOX_AIRFOIL_KEY}")
-        structured_box[util.BOX_AIRFOIL_KEY] = _as_row_tensor(
-            box[util.BOX_AIRFOIL_KEY],
-            util.WING_AIRFOIL_CODE_SIZE,
-            f"boxes[{box_index}].{util.BOX_AIRFOIL_KEY}",
-        )
-    elif has_airfoil:
+    component = _component_from_value(box["component"])
+    if component in util.COMPONENT_SECTION_SIZES:
+        for key in ("sections", "section_count"):
+            if key not in box:
+                name = util.component_name(component)
+                raise KeyError(f"{name} boxes[{box_index}] missing required key: {key}")
+        if "geometry" in box:
+            name = util.component_name(component)
+            raise KeyError(f"{name} boxes[{box_index}] must not define {"geometry"}")
+        structured_box = {
+            "component": component,
+            "sections": _as_component_sections(
+                box["sections"], component, f"boxes[{box_index}].{"sections"}"
+            ),
+            "section_count": _as_section_count(
+                box["section_count"], f"boxes[{box_index}].{"section_count"}"
+            ),
+        }
+        mask = util.section_mask(structured_box["section_count"])
+        padded = structured_box["sections"][~mask]
+        if not torch.equal(padded, torch.zeros_like(padded)):
+            raise ValueError(f"boxes[{box_index}].{"sections"} padding must be zero")
+    else:
+        if "geometry" not in box:
+            raise KeyError(f"boxes[{box_index}] missing required key: {"geometry"}")
+        if "sections" in box or "section_count" in box:
+            name = util.component_name(component)
+            raise KeyError(f"{name} boxes[{box_index}] must not define sequence sections")
+        geometry_size = util.COMPONENT_GEOMETRY_SIZES[component]
+        structured_box = {
+            "component": component,
+            "geometry": _as_row_tensor(
+                box["geometry"],
+                geometry_size,
+                f"boxes[{box_index}].{"geometry"}",
+            ),
+        }
+    if "sections" in box and component not in util.COMPONENT_SECTION_SIZES:
         name = util.component_name(component)
-        raise KeyError(f"{name} boxes[{box_index}] must not define {util.BOX_AIRFOIL_KEY}")
+        raise KeyError(f"{name} boxes[{box_index}] must not define {"sections"}")
 
     return structured_box
 

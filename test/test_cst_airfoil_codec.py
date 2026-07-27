@@ -48,7 +48,7 @@ def test_cst_code_is_24d_and_round_trips():
     assert torch.allclose(curve[0, -1, 0], torch.tensor(util.AIRFOIL_TRAILING_EDGE_X))
     assert torch.allclose(
         curve[0, curve.size(1) // 2],
-        torch.tensor([util.AIRFOIL_LEADING_EDGE_X, util.AIRFOIL_LEADING_EDGE_Y]),
+        torch.tensor([util.AIRFOIL_LEADING_EDGE_X, 0.0]),
     )
 
 
@@ -59,7 +59,7 @@ def test_cst_fit_uses_shared_physical_leading_edge():
     assert result['curve'].shape == (util.AIRFOIL_DEFAULT_OUTPUT_POINTS, 2)
     assert torch.allclose(
         result['leading_edge'],
-        torch.tensor([util.AIRFOIL_LEADING_EDGE_X, util.AIRFOIL_LEADING_EDGE_Y]),
+        torch.tensor([util.AIRFOIL_LEADING_EDGE_X, 0.0]),
     )
     assert torch.all(torch.isfinite(result['code']))
     assert result['class_function_n1'].item() > util.CST_MIN_CLASS_FUNCTION_EXPONENT

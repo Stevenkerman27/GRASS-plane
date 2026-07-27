@@ -29,6 +29,7 @@ FUSELAGE_END_CAP_GROUP = "EndCap"
 FUSELAGE_NOSE_CAP_PARM = "CapUMinOption"
 FUSELAGE_TAIL_CAP_PARM = "CapUMaxOption"
 WING_AIRFOIL_PATH = REPO_ROOT / "foildata" / "processed_foil" / "_falcon.dat"
+LEGACY_WING_GEOMETRY_SIZE = 8
 GEOMETRY_JSON_FILENAME = "conventional_geometry.json"
 TYPED_OBB_JSON_FILENAME = "conventional_obb.json"
 HALF_BOX_ORDER = [
@@ -334,7 +335,7 @@ def component_for_box_label(label):
 
 def build_geometry_component(label, box):
     component = component_for_box_label(label)
-    geometry_size = util.COMPONENT_GEOMETRY_SIZES[component]
+    geometry_size = LEGACY_WING_GEOMETRY_SIZE if component == util.COMPONENT_WING else util.COMPONENT_GEOMETRY_SIZES[component]
     geometry = box if component == util.COMPONENT_WING else box[:geometry_size]
     if len(geometry) != geometry_size:
         raise ValueError(
@@ -342,8 +343,8 @@ def build_geometry_component(label, box):
         )
     return {
         "name": label,
-        util.BOX_COMPONENT_KEY: component,
-        util.BOX_GEOMETRY_KEY: geometry,
+        "component": component,
+        "geometry": geometry,
     }
 
 

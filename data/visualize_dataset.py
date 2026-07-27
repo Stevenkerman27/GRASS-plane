@@ -1,4 +1,4 @@
-"""Randomly show one full conventional-aircraft OBB from the structured dataset."""
+"""Randomly show one full flying-wing OBB from the structured dataset."""
 
 from __future__ import annotations
 
@@ -28,13 +28,13 @@ DEFAULT_OPENVSP_EXECUTABLE = Path(r"D:\3D\Projects\OpenVSP-3.51.0-win64\vsp.exe"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Randomly show one aircraft OBB from conventional_dataset.pt.")
-    parser.add_argument("--dataset", type=Path, default=DATA_DIR / "conventional_dataset" / "conventional_dataset.pt")
+    parser = argparse.ArgumentParser(description="Randomly show one aircraft OBB from flying_wing_dataset.pt.")
+    parser.add_argument("--dataset", type=Path, default=DATA_DIR / "flying_wing_dataset" / "flying_wing_dataset.pt")
     parser.add_argument("--index", type=int, default=None, help="Optional deterministic sample index.")
     parser.add_argument("--seed", type=int, default=None, help="Optional seed for random sample selection.")
     parser.add_argument("--backend", default=None, help="Optional interactive matplotlib backend, for example TkAgg.")
     parser.add_argument("--vsp-exe", type=Path, default=DEFAULT_OPENVSP_EXECUTABLE)
-    parser.add_argument("--vsp-dir", type=Path, default=DATA_DIR / "conventional_dataset")
+    parser.add_argument("--vsp-dir", type=Path, default=DATA_DIR / "flying_wing_dataset")
     parser.add_argument("--no-open-vsp", dest="open_vsp", action="store_false")
     parser.set_defaults(open_vsp=True)
     return parser.parse_args()
@@ -75,8 +75,13 @@ def open_vsp(vsp_executable, vsp_path):
 
 
 def component_geometry(node):
-    component = node.box[util.BOX_COMPONENT_KEY]
-    geometry = node.box[util.BOX_GEOMETRY_KEY].detach().cpu().reshape(-1).tolist()
+    component = node.box["component"]
+    if component in util.COMPONENT_SECTION_SIZES:
+        return component, {
+            "sections": node.box["sections"].detach().cpu().squeeze(0),
+            "section_count": int(node.box["section_count"].item()),
+        }
+    geometry = node.box["geometry"].detach().cpu().reshape(-1).tolist()
     expected_size = util.COMPONENT_GEOMETRY_SIZES[component]
     if len(geometry) != expected_size:
         raise ValueError(f"OBB geometry has {len(geometry)} values, expected {expected_size}")
@@ -96,6 +101,22 @@ def reflect_geometry(component, geometry, symmetry):
         raise ValueError("Reflective SYM node has a zero plane normal")
     normal /= normal_norm
     point = torch.tensor(symmetry_values[4:7], dtype=torch.float32)
+    if component == util.COMPONENT_WING:
+        sections = geometry["sections"].clone()
+        count = geometry["section_count"]
+        sections[:count, 25] *= -1.0
+        sections[:count, 28] *= -1.0
+        return component, {
+            "sections": sections,
+            "section_count": count,
+        }
+    if component == util.COMPONENT_FUSELAGE:
+        sections = geometry["sections"].clone()
+        count = geometry["section_count"]
+        positions = sections[:count, :3]
+        reflected_positions = positions - 2.0 * torch.matmul(positions - point, normal).unsqueeze(1) * normal
+        sections[:count, :3] = reflected_positions
+        return component, {"sections": sections, "section_count": count}
     reflected = list(geometry)
     for start_index in (0, 3):
         position = torch.tensor(geometry[start_index:start_index + 3], dtype=torch.float32)
@@ -120,6 +141,30 @@ def component_label(component, counters):
     name = util.component_name(component)
     counters[name] = counters.get(name, 0) + 1
     return f"{name}_{counters[name]}"
+
+
+def draw_fuselage_sections(ax, fuselage, label):
+    import numpy as np
+
+    count = fuselage["section_count"]
+    sections = fuselage["sections"][:count].numpy()
+    theta = np.linspace(0.0, 2.0 * np.pi, ELLIPSE_SAMPLES)
+    rings = []
+    for section in sections:
+        center = section[:3]
+        width, height = section[3:5]
+        ring = np.vstack((
+            center[0] + np.zeros_like(theta),
+            center[1] + (width / 2.0) * np.cos(theta),
+            center[2] + (height / 2.0) * np.sin(theta),
+        ))
+        rings.append(ring)
+        ax.plot(ring[0], ring[1], ring[2], color="gray", linewidth=1.2)
+    for start, end in zip(rings[:-1], rings[1:], strict=True):
+        for sample in range(ELLIPSE_SAMPLES):
+            ax.plot([start[0, sample], end[0, sample]], [start[1, sample], end[1, sample]], [start[2, sample], end[2, sample]], color="gray", linewidth=0.8)
+    center = sections[:, :3].mean(axis=0)
+    ax.text(center[0], center[1], center[2], label, color="black", fontsize=9)
 
 
 def draw_elliptical_body(ax, geometry, label):
@@ -150,26 +195,45 @@ def draw_elliptical_body(ax, geometry, label):
     ax.text(center[0], center[1], center[2], label, color="black", fontsize=9)
 
 
-def draw_wing_planform(ax, geometry, color, label):
+def draw_wing_planform(ax, wing, color, label):
     import numpy as np
 
-    root = np.asarray(geometry[0:3], dtype=float)
-    tip = np.asarray(geometry[3:6], dtype=float)
+    count = wing["section_count"]
+    sections = wing["sections"][:count].numpy()
+    leading_edges = sections[:, 24:27]
+    span_axis = leading_edges[-1] - leading_edges[0]
+    span_axis /= np.linalg.norm(span_axis)
     chord_axis = np.array([1.0, 0.0, 0.0])
-    root_le = root - chord_axis * geometry[6] / 2.0
-    root_te = root + chord_axis * geometry[6] / 2.0
-    tip_le = tip - chord_axis * geometry[7] / 2.0
-    tip_te = tip + chord_axis * geometry[7] / 2.0
-    corners = (root_le, root_te, tip_te, tip_le, root_le)
-    ax.plot([corner[0] for corner in corners], [corner[1] for corner in corners], [corner[2] for corner in corners], color=color, linewidth=1.6)
-    center = (root + tip) / 2.0
+    trailing_edges = []
+    for section in sections:
+        angle = section[28]
+        rotated_chord = (
+            chord_axis * np.cos(angle)
+            + np.cross(span_axis, chord_axis) * np.sin(angle)
+            + span_axis * np.dot(span_axis, chord_axis) * (1.0 - np.cos(angle))
+        )
+        leading_edge = section[24:27]
+        chord = section[27]
+        trailing_edges.append(leading_edge + chord * rotated_chord)
+    for edge_index in range(count - 1):
+        corners = (leading_edges[edge_index], trailing_edges[edge_index], trailing_edges[edge_index + 1], leading_edges[edge_index + 1], leading_edges[edge_index])
+        ax.plot([corner[0] for corner in corners], [corner[1] for corner in corners], [corner[2] for corner in corners], color=color, linewidth=1.6)
+    center = leading_edges.mean(axis=0)
     ax.text(center[0], center[1], center[2], label, color="black", fontsize=9)
 
 
 def set_aircraft_axes(ax, components):
     import numpy as np
 
-    points = np.asarray([point for _, geometry in components for point in (geometry[0:3], geometry[3:6])], dtype=float)
+    points = []
+    for component, geometry in components:
+        if component in util.COMPONENT_SECTION_SIZES:
+            count = geometry["section_count"]
+            position_slice = slice(24, 27) if component == util.COMPONENT_WING else slice(0, 3)
+            points.extend(geometry["sections"][:count, position_slice].tolist())
+        else:
+            points.extend((geometry[0:3], geometry[3:6]))
+    points = np.asarray(points, dtype=float)
     center = points.mean(axis=0)
     max_range = max((points.max(axis=0) - points.min(axis=0)).max(), 1.0)
     radius = max_range * 0.62
@@ -185,15 +249,17 @@ def show_aircraft(index, tree):
 
     assert_interactive_backend(matplotlib)
     components = expand_tree(tree.root)
-    if len(components) != 10:
-        raise ValueError(f"Fixed conventional topology must expand to 10 components, got {len(components)}")
+    if not components:
+        raise ValueError("Expanded flying-wing topology contains no components")
     fig = plt.figure(figsize=(9, 6))
     ax = fig.add_subplot(111, projection="3d")
     cmap = plt.get_cmap("jet_r")
     counters = {}
     for component_index, (component, geometry) in enumerate(components):
         label = component_label(component, counters)
-        if component in (util.COMPONENT_FUSELAGE, util.COMPONENT_ENGINE):
+        if component == util.COMPONENT_FUSELAGE:
+            draw_fuselage_sections(ax, geometry, label)
+        elif component == util.COMPONENT_ENGINE:
             draw_elliptical_body(ax, geometry, label)
         elif component == util.COMPONENT_WING:
             draw_wing_planform(ax, geometry, cmap(component_index / len(components)), label)
@@ -203,7 +269,7 @@ def show_aircraft(index, tree):
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Z (m)")
-    ax.set_title(f"Conventional Aircraft OBB - Sample {index:04d}")
+    ax.set_title(f"Flying-Wing OBB - Sample {index:04d}")
     ax.view_init(elev=22, azim=-58)
     print("Matplotlib backend:", matplotlib.get_backend(), flush=True)
     print(f"Showing sample {index:04d}. Close the window to continue.", flush=True)

@@ -1,6 +1,6 @@
 # 飞行器布局编码与 GRASS VAE 定义
 
-本文档总结当前代码中已经实际实现的飞行器布局编码、VAE 训练、递归 GRASS 模型与 torchfold 适配细节。它区分仍由正式训练和自由生成入口使用的旧扁平 13D 路径，以及已实现 encoder/teacher-forced decoder smoke test、但尚未接入正式训练或自由生成的 typed 路径。typed schema 与实施状态的权威定义位于 `docs/typed_box_airfoil_encoding.md`。`train_GAN.py`、`GAN_gen.py`、判别器和 WGAN-GP 训练不作为本文定义来源。
+本文档总结当前代码中已经实际实现的飞行器布局编码、VAE 训练、递归 GRASS 模型与 torchfold 适配细节。`train.py` 默认使用 typed structured 数据；GAN 与自由生成仍使用旧扁平 13D 路径。翼面序列 schema 的权威定义位于 `docs/hierarchical_aircraft_encoding.md` 和 `util.py`。
 
 ## 1. 权威代码位置
 
@@ -49,7 +49,7 @@
 
 ### 2.3 旧扁平 13 维 box 编码与 typed 路径
 
-旧的扁平训练路径使用 `util.py` 中的 `box_code_size = 13`。新的 typed box 路径按部件保存 payload：机身和发动机使用 10 维 geometry，翼面使用 8 维 geometry 加根、尖各 24 维 CST 翼型 code；其带类别 one-hot 的扁平导出长度分别为 13D 与 59D。详见 `docs/typed_box_airfoil_encoding.md`。
+旧的扁平训练路径使用 `util.py` 中的 `box_code_size = 13`。新的 typed 路径中，机身使用 `[8,5] + section_count`，翼面使用 `[8,29] + section_count`；发动机暂时保持 10D geometry。详见 `docs/hierarchical_aircraft_encoding.md`。
 
 13 维 box 向量格式为:
 
@@ -168,7 +168,8 @@ boxes[i][j] = boxes[i][j] * 2.0 - 1.0
 `GRASSEncoder` 同时保留旧扁平 head，并实现 typed leaf head:
 
 - `BoxEncoder`: `Linear(box_code_size, feature_size)` + `Tanh`。
-- `fuselageBoxEncoder`、`wingBoxEncoder`、`engineBoxEncoder`: 分别接收机身 10D、翼面 `8D + 48D` 和发动机 10D payload。
+- `obbBoxEncoder`: 发动机的 10D OBB encoder。
+- `fuselageSectionEncoder` 与 `wingSectionEncoder`: 使用经典 RNN 读取变长截面和 `section_count`，最终 hidden state 作为部件 feature。
 - `AdjEncoder`: 左右子 feature 分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `SymEncoder`: 子 feature 与 symmetry 参数分别线性映射到 hidden，再相加，经 `Tanh`、`Linear(hidden_size, feature_size)`、`Tanh`。
 - `Sampler`: VAE 采样层。
@@ -176,7 +177,7 @@ boxes[i][j] = boxes[i][j] * 2.0 - 1.0
 编码递归入口为 `encode_structure_fold(fold, tree, use_sampler=True)`:
 
 - 旧扁平 `BOX`: 调用 `boxEncoder(box)`。
-- typed `BOX`: 根据 `component` 分派至三个 typed box encoder；翼面额外传入 `airfoil` code。
+- typed `BOX`: 机身和翼面分派至各自的 section encoder；发动机分派至 `obbBoxEncoder`。
 - `ADJ`: 递归编码左右子树，再调用 `adjEncoder(left, right)`。
 - `SYM`: 递归编码 generator 子树，再调用 `symEncoder(feature, sym)`。
 - 根节点 feature 默认继续调用 `sampleEncoder(feature)`。
@@ -226,7 +227,9 @@ kl_weight = kl_weight_target * min(1.0, epoch / kl_anneal_epochs)
 - `AdjDecoder`: 父 feature 解码为左右两个子 feature。
 - `SymDecoder`: 父 feature 解码为 generator 子 feature 与 symmetry 参数。
 - `BoxDecoder`: 父 feature 解码为 13 维 box。
-- `fuselageBoxDecoder`、`wingBoxDecoder`、`engineBoxDecoder`: 分别输出对应 typed payload。
+- `obbBoxDecoder`: 发动机的 10D geometry decoder。
+- `fuselageSectionDecoder` 与 `wingSectionDecoder`: teacher-forced 自回归 RNN decoder，并预测 `section_count`。
+- `wingSectionDecoder`: 输出 `[8,29]` 截面与 count logits；mask 由目标/预测 count 推导。
 - `componentClassifier`: 输出 fuselage/wing/engine 三类 logits；不与 `NodeClassifier` 的 `BOX/ADJ/SYM` 分类混用。
 - `NodeClassifier`: 父 feature 分类为 `BOX/ADJ/SYM` 三类 logits。
 
@@ -267,7 +270,7 @@ geom_loss = box_loss_raw[0]
 cls_loss = box_loss_raw[1]
 ```
 
-typed 路径同样返回两列 `[payload_loss, component_cls_loss]` 以复用该聚合形状；翼面 payload loss 为 8D 几何 MSE 与 24D CST code MSE 之和。详细字段、loss 与完成状态以 `docs/typed_box_airfoil_encoding.md` 为准。
+typed 翼面损失拆为位置、弦长、twist、24D CST code、CST 解码曲线和截面 count；每项只在 count 推导的有效 mask 上计算。权重由 `util.WING_LOSS_WEIGHTS` 集中定义。
 
 ### 4.2 symmetry loss
 
@@ -410,9 +413,8 @@ FoldExt(volatile=False, cuda=False)
 
 - Encoder:
   - `boxEncoder`
-  - `fuselageBoxEncoder`
-  - `wingBoxEncoder`
-  - `engineBoxEncoder`
+  - `obbBoxEncoder`
+  - `wingSectionEncoder`
   - `adjEncoder`
   - `symEncoder`
   - `sampleEncoder`
@@ -421,15 +423,13 @@ FoldExt(volatile=False, cuda=False)
   - `adjDecoder`
   - `symDecoder`
   - `boxDecoder`
-  - `fuselageBoxDecoder`
-  - `wingBoxDecoder`
-  - `engineBoxDecoder`
+  - `obbBoxDecoder`
+  - `wingSectionDecoder`
   - `componentClassifier`
   - `nodeClassifier`
   - `boxLossEstimator`
-  - `fuselageBoxLossEstimator`
-  - `wingBoxLossEstimator`
-  - `engineBoxLossEstimator`
+  - `obbBoxLossEstimator`
+  - `wingSectionLossEstimator`
   - `symLossEstimator`
   - `classifyLossEstimator`
 

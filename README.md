@@ -1,7 +1,7 @@
 # GRASS in Pytorch
 This is a Pytorch implementation of the paper "[GRASS: Generative Recursive Autoencoders for Shape Structures](http://kevinkaixu.net/projects/grass.html)". The paper is about learning a generative model for 3D shape structures by structural encoding and decoding with Recursive Neural Networks. This code was originally written by [Chenyang Zhu](http://www.sfu.ca/~cza68/) and is being improved and maintained here in this repository.
 
-The repository provides the legacy flat-box VAE training and generation path, plus an experimental WGAN-GP path in `train_GAN.py`. The typed aircraft-box path has encoder and teacher-forced reconstruction support, but is not yet wired into the formal training, GAN, or free-generation entry points. See `docs/aircraft_layout_vae_definitions.md` and `docs/typed_box_airfoil_encoding.md` for the current boundary.
+The repository provides the legacy flat-box VAE and experimental WGAN-GP paths. The default `train.py` path now loads the structured aircraft dataset: wings and fuselages are padded section sequences encoded with classic RNNs and reconstructed with teacher-forced autoregressive RNN decoders; engines retain the legacy OBB path. GAN and free generation remain on the legacy flat-box path.
 
 ## Usage
 **Dependencies**

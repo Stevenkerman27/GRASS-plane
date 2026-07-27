@@ -336,10 +336,10 @@ def decode_cst_airfoil_code(code, num_output_points=util.AIRFOIL_DEFAULT_OUTPUT_
 
 
 def symmetric_airfoil_code_from_upper(airfoil_code, symmetry_line_y):
-    if symmetry_line_y != util.AIRFOIL_LEADING_EDGE_Y:
+    if symmetry_line_y != 0.0:
         raise ValueError(
             'fixed-leading-edge CST can only mirror about '
-            f'y={util.AIRFOIL_LEADING_EDGE_Y}, got {symmetry_line_y}'
+            f'y={0.0}, got {symmetry_line_y}'
         )
     unpacked = unpack_cst_airfoil_code(airfoil_code)
     upper = unpacked[util.AIRFOIL_UPPER_SURFACE]
@@ -370,12 +370,12 @@ def _validate_target_points(points):
             f'expected {leading_edge_index}, got {actual_leading_edge_index}'
         )
     fixed_leading_edge = torch.tensor(
-        [util.AIRFOIL_LEADING_EDGE_X, util.AIRFOIL_LEADING_EDGE_Y], dtype=points.dtype
+        [util.AIRFOIL_LEADING_EDGE_X, 0.0], dtype=points.dtype
     )
     if not torch.allclose(points[leading_edge_index], fixed_leading_edge, atol=1e-6, rtol=0.0):
         raise ValueError(
             'raw_points shared leading-edge point must equal '
-            f'({util.AIRFOIL_LEADING_EDGE_X}, {util.AIRFOIL_LEADING_EDGE_Y})'
+            f'({util.AIRFOIL_LEADING_EDGE_X}, {0.0})'
         )
     if not torch.isclose(points[0, 0], torch.tensor(util.AIRFOIL_TRAILING_EDGE_X, dtype=points.dtype)):
         raise ValueError(f'upper trailing-edge x must equal {util.AIRFOIL_TRAILING_EDGE_X}')
@@ -456,7 +456,7 @@ def fit_airfoil_points(raw_points, fit_config, device=None, verbose=False):
         'code': code.detach().cpu(),
         'curve': curve.squeeze(0).detach().cpu(),
         'target_points': target_points.squeeze(0).detach().cpu(),
-        'leading_edge': torch.tensor([util.AIRFOIL_LEADING_EDGE_X, util.AIRFOIL_LEADING_EDGE_Y]),
+        'leading_edge': torch.tensor([util.AIRFOIL_LEADING_EDGE_X, 0.0]),
         'class_function_n1': class_function_n1.squeeze(0).detach().cpu(),
         'class_function_n2': class_function_n2.squeeze(0).detach().cpu(),
         'mae': float(mae_value),

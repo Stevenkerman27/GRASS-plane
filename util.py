@@ -10,20 +10,15 @@ COMPONENT_NAMES = {
     COMPONENT_ENGINE: 'engine',
 }
 
-BOX_COMPONENT_KEY = 'component'
-BOX_GEOMETRY_KEY = 'geometry'
-BOX_AIRFOIL_KEY = 'airfoil'
-
-FUSELAGE_GEOMETRY_SIZE = 10
-ENGINE_GEOMETRY_SIZE = 10
-WING_GEOMETRY_SIZE = 8
+FUSELAGE_SECTION_SIZE = 5
+OBB_GEOMETRY_SIZE = 10
+ENGINE_GEOMETRY_SIZE = OBB_GEOMETRY_SIZE
 AIRFOIL_DEFAULT_OUTPUT_POINTS = 100
 AIRFOIL_DEFAULT_POINT_DENSITY_BETA = 1.3
 AIRFOIL_TRAILING_EDGE_X = 1.0
 AIRFOIL_LEADING_EDGE_X = 0.0
-AIRFOIL_LEADING_EDGE_Y = 0.0
 COMPONENT_CLASS_SIZE = 3
-STANDARD_OBB_BOX_SIZE = FUSELAGE_GEOMETRY_SIZE + COMPONENT_CLASS_SIZE
+STANDARD_OBB_BOX_SIZE = OBB_GEOMETRY_SIZE + COMPONENT_CLASS_SIZE
 AIRFOIL_UPPER_SURFACE = 'upper'
 AIRFOIL_LOWER_SURFACE = 'lower'
 
@@ -48,14 +43,30 @@ CST_FIT_CONFIG = {
     'initial_n2': 1.0,
     'minimum_class_function_exponent': CST_MIN_CLASS_FUNCTION_EXPONENT,
 }
-WING_AIRFOIL_SECTION_COUNT = 2
-AIRFOIL_CODE_SIZE = CST_AIRFOIL_CODE_SIZE
-WING_AIRFOIL_CODE_SIZE = AIRFOIL_CODE_SIZE * WING_AIRFOIL_SECTION_COUNT
-WING_OBB_BOX_SIZE = WING_GEOMETRY_SIZE + WING_AIRFOIL_CODE_SIZE + COMPONENT_CLASS_SIZE
+SECTION_COUNT_RANGE = (2, 8)
+MIN_SECTION_COUNT, MAX_SECTION_COUNT = SECTION_COUNT_RANGE
+SEQUENCE_RNN_LAYERS = 1
+COMPONENT_SECTION_SIZES = {
+    COMPONENT_FUSELAGE: FUSELAGE_SECTION_SIZE,
+    COMPONENT_WING: CST_AIRFOIL_CODE_SIZE + 5,
+}
+WING_LOSS_WEIGHTS = {
+    'position': 1.0,
+    'chord': 1.0,
+    'twist': 1.0,
+    'cst_code': 1.0,
+    'decoded_curve': 1.0,
+    'section_count': 1.0,
+}
+FUSELAGE_LOSS_WEIGHTS = {
+    'position': 1.0,
+    'size': 1.0,
+    'section_count': 1.0,
+}
 
 COMPONENT_GEOMETRY_SIZES = {
-    COMPONENT_FUSELAGE: FUSELAGE_GEOMETRY_SIZE,
-    COMPONENT_WING: WING_GEOMETRY_SIZE,
+    # Conventional-data compatibility; flying-wing fuselages are sequence payloads.
+    COMPONENT_FUSELAGE: OBB_GEOMETRY_SIZE,
     COMPONENT_ENGINE: ENGINE_GEOMETRY_SIZE,
 }
 
@@ -69,6 +80,19 @@ def component_name(component):
 def component_one_hot(component):
     component_name(component)
     return [float(component == index) for index in range(COMPONENT_CLASS_SIZE)]
+
+
+def section_mask(section_count, device=None):
+    """Derive the only valid padding mask from a tensor of section counts."""
+    import torch
+
+    count = torch.as_tensor(section_count, device=device, dtype=torch.long).reshape(-1)
+    if torch.any(count < MIN_SECTION_COUNT) or torch.any(count > MAX_SECTION_COUNT):
+        raise ValueError(
+            f'section_count must be in [{MIN_SECTION_COUNT}, {MAX_SECTION_COUNT}], '
+            f'got {count.tolist()}'
+        )
+    return torch.arange(MAX_SECTION_COUNT, device=count.device).unsqueeze(0) < count.unsqueeze(1)
 
 
 def get_args():
@@ -117,6 +141,8 @@ def get_args():
     parser.add_argument('--no_cuda', action='store_true', default=False)
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--data_path', type=str, default='data')
+    parser.add_argument('--structured_data_path', type=str, default='data/flying_wing_dataset/flying_wing_dataset.pt')
+    parser.add_argument('--legacy_data', action='store_true', default=False)
     parser.add_argument('--save_path', type=str, default='models')
     parser.add_argument('--resume_snapshot', type=str, default='')
     args = parser.parse_args()

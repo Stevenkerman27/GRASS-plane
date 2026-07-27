@@ -14,10 +14,23 @@ OpenVSP 3.50.5 对 `VSPAEROComputeGeometry` 和 `VSPAEROSweep` 的输入说明�
 - `GeomSet`: Thick surface geometry Set for analysis.
 - `ThinGeomSet`: Thin surface geometry Set for analysis.
 
+## Geometry-set assignment
+
+After each `ini_geom()` call, the shared infrastructure defines three user
+geometry sets:
+
+- `fuselage` contains only `FUSELAGE` geometry and is Panel's thick `GeomSet`.
+- `wing` contains only `WING` geometry and is Panel's and VLM's thin `ThinGeomSet`.
+- `prop` contains only `PROP` geometry and is excluded by `runaero_panel(...)`.
+
+Panel passes `fuselage` as `GeomSet` and `wing` as `ThinGeomSet` in both the
+compute-geometry and sweep analyses. VLM continues to pass no thick set and
+`wing` as its thin set.
+
 因此代码中采用单一来源常量:
 
-- `VSPAERO_THICK_GEOM_SET = vsp.SET_SHOWN`
-- `VSPAERO_THIN_GEOM_SET = vsp.SET_SHOWN`
+- `VSPAERO_THICK_GEOM_SET = VSPAERO_FUSELAGE_GEOM_SET`
+- `VSPAERO_THIN_GEOM_SET = VSPAERO_WING_GEOM_SET`
 - `VSPAERO_NO_GEOM_SET = vsp.SET_NONE`
 
 VLM 跑法使用:

@@ -1,7 +1,8 @@
 # Typed Box 与 CST 翼型编码
 
-typed wing payload 使用 8D 翼面几何和根、尖各一条 24D CST code；因此翼型 payload 为 48D，带 3D
-部件类别的扁平 wing OBB 为 59D。机身与发动机保持 10D 几何和 13D 扁平 OBB。
+该文件保留 CST 24D 的定义；翼面叶 payload 已迁移为 `sections[max_sections=8, 29] + section_count`，不再使用 8D 翼面几何和根/尖 48D 扁平 code。29D 与 mask、twist 约定以 `docs/hierarchical_aircraft_encoding.md` 和 `util.py` 为准。
+
+typed wing payload 使用零填充的 `[8,29]` 截面张量和 `section_count`。每个有效截面为 `[CST24, leading_edge_xyz3, chord, twist]`；机身使用零填充的 `[8,5]` 截面张量，每站为 `[x,y,z,width,height]`，发动机暂时保持 10D OBB geometry。
 
 `util.py` 是组件 schema、翼型维度、采样布局和 `CST_FIT_CONFIG` 的唯一来源。`cst_airfoil_codec.py`
 是 CST 的 pack/unpack/decode/fit 单一来源，使用物理坐标，尾缘 `x=1`、共享前缘固定为 `(0,0)`。

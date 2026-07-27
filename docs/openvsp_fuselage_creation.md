@@ -1,5 +1,11 @@
 # OpenVSP Fuselage Creation
 
+## Geometry Set
+
+`create_fuselage(...)` assigns its `FUSELAGE` geometry to the user geometry set
+named `fuselage`. `runaero_panel(...)` uses this set as its thick `GeomSet`;
+the separately assigned `wing` set is passed as the thin `ThinGeomSet`.
+
 本文记录共享包 `aircraft_tools.openvsp_infrastructure` 中简单多段式机身的创建约定。
 
 ## 函数接口
@@ -35,6 +41,13 @@
 - 每个截面的宽高必须同时为零，或同时为正数；禁止一项为零、另一项为正数，以及负尺寸。
 
 这些输入检查采用 fail-fast 方式；不合理输入会直接抛出 `ValueError`，避免生成看似成功但几何异常的 `.vsp3`。
+
+## OBB 线性过渡
+
+完成所有截面形状与站位设置后，`create_fuselage(...)` 会对 `XSecSurf` 中每一个截面调用
+`vsp.ResetXSecSkinParms(xsec_id)`。这等价于 OpenVSP 界面的 `Clear Skinning for the Entire Stack`：
+相邻站位的表面过渡不再使用默认的 skinning 参数，而保持线性，确保三段机身曲面与其 OBB
+表示一致。
 
 ## 验证脚本
 

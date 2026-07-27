@@ -12,25 +12,44 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import grassmodel
 import util
+import cst_airfoil_codec
 from grassdata import StructuredGRASSDataset, Tree
 from torchfoldext import FoldExt
 
 
 def build_structured_sample():
+    code = cst_airfoil_codec.pack_cst_airfoil_code(
+        torch.full((util.CST_SURFACE_SHAPE_COEFFICIENTS,), 0.12),
+        torch.full((util.CST_SURFACE_SHAPE_COEFFICIENTS,), -0.10),
+        upper_trailing_edge_y=0.0,
+        lower_trailing_edge_y=0.0,
+        class_function_n1=0.5,
+        class_function_n2=1.0,
+    )
+    sections = torch.zeros(util.MAX_SECTION_COUNT, util.COMPONENT_SECTION_SIZES[util.COMPONENT_WING])
+    sections[:2, :util.CST_AIRFOIL_CODE_SIZE] = code
+    sections[0, 24:29] = torch.tensor([0.25, 0.0, 0.0, 0.30, 0.0])
+    sections[1, 24:29] = torch.tensor([0.25, 0.5, 0.0, 0.15, 0.0])
     return {
         "boxes": [
             {
-                util.BOX_COMPONENT_KEY: util.COMPONENT_FUSELAGE,
-                util.BOX_GEOMETRY_KEY: torch.zeros(util.FUSELAGE_GEOMETRY_SIZE),
+                "component": util.COMPONENT_FUSELAGE,
+                "sections": torch.tensor([
+                    [0.0, 0.0, 0.0, 0.08, 0.10],
+                    [0.4, 0.0, 0.0, 0.14, 0.15],
+                    [0.8, 0.0, 0.0, 0.06, 0.08],
+                    *([[0.0] * util.FUSELAGE_SECTION_SIZE] * (util.MAX_SECTION_COUNT - 3)),
+                ]),
+                "section_count": 3,
             },
             {
-                util.BOX_COMPONENT_KEY: util.COMPONENT_WING,
-                util.BOX_GEOMETRY_KEY: torch.ones(util.WING_GEOMETRY_SIZE),
-                util.BOX_AIRFOIL_KEY: torch.zeros(util.WING_AIRFOIL_CODE_SIZE),
+                "component": util.COMPONENT_WING,
+                "sections": sections,
+                "section_count": 2,
             },
             {
-                util.BOX_COMPONENT_KEY: util.COMPONENT_ENGINE,
-                util.BOX_GEOMETRY_KEY: torch.full((util.ENGINE_GEOMETRY_SIZE,), 0.25),
+                "component": util.COMPONENT_ENGINE,
+                "geometry": torch.full((util.ENGINE_GEOMETRY_SIZE,), 0.25),
             },
         ],
         "ops": torch.tensor([
@@ -92,33 +111,58 @@ def test_structured_typed_decoder_loss_backward(tmp_path):
     total_loss = box_loss.sum() + cat_loss.sum()
     total_loss.backward()
 
-    wing_grad = decoder.wing_box_decoder.mlp.weight.grad
+    wing_grad = decoder.wing_section_decoder.output.weight.grad
+    fuselage_grad = decoder.fuselage_section_decoder.output.weight.grad
     component_grad = decoder.component_classifier.mlp2.weight.grad
     assert wing_grad is not None
+    assert fuselage_grad is not None
     assert component_grad is not None
 
 
-def test_structured_wing_requires_airfoil():
+def test_sequence_models_use_classic_rnn_and_fuselage_constraints():
+    config = build_config()
+    encoder = grassmodel.GRASSEncoder(config)
+    decoder = grassmodel.GRASSDecoder(config)
+    teacher_sections = torch.zeros(
+        1, util.MAX_SECTION_COUNT, util.FUSELAGE_SECTION_SIZE
+    )
+    sections, count_logits = decoder.fuselageSectionDecoder(
+        torch.zeros(1, config.feature_size), teacher_sections
+    )
+
+    assert isinstance(encoder.fuselage_section_encoder.rnn, torch.nn.RNN)
+    assert isinstance(encoder.wing_section_encoder.rnn, torch.nn.RNN)
+    assert isinstance(decoder.fuselage_section_decoder.rnn, torch.nn.RNNCell)
+    assert sections.shape == (1, util.MAX_SECTION_COUNT, util.FUSELAGE_SECTION_SIZE)
+    assert count_logits.shape == (
+        1, util.MAX_SECTION_COUNT - util.MIN_SECTION_COUNT + 1
+    )
+    assert torch.equal(sections[:, 0, 0], torch.zeros(1))
+    assert torch.all(sections[:, 1:, 0] > sections[:, :-1, 0])
+    assert torch.all(sections[:, :, 3:5] > 0.0)
+
+
+def test_structured_wing_requires_sections():
     sample = build_structured_sample()
-    del sample["boxes"][1][util.BOX_AIRFOIL_KEY]
+    del sample["boxes"][1]["sections"]
 
     with pytest.raises(KeyError, match="missing required key"):
         Tree.from_structured_sample(sample)
 
 
-def test_structured_wing_requires_root_and_tip_airfoil_codes():
+def test_structured_wing_requires_padded_29d_sections():
     sample = build_structured_sample()
-    sample["boxes"][1][util.BOX_AIRFOIL_KEY] = torch.zeros(util.CST_AIRFOIL_CODE_SIZE)
+    sample["boxes"][1]["sections"] = torch.zeros(util.MAX_SECTION_COUNT - 1, util.COMPONENT_SECTION_SIZES[util.COMPONENT_WING])
 
-    with pytest.raises(ValueError, match=rf"\[1, {util.WING_AIRFOIL_CODE_SIZE}\]"):
+    with pytest.raises(ValueError, match="must have shape"):
         Tree.from_structured_sample(sample)
 
 
-def test_structured_non_wing_rejects_airfoil():
+def test_structured_engine_rejects_sections():
     sample = build_structured_sample()
-    sample["boxes"][0][util.BOX_AIRFOIL_KEY] = torch.zeros(util.CST_AIRFOIL_CODE_SIZE)
+    sample["boxes"][2]["sections"] = torch.zeros(util.MAX_SECTION_COUNT, util.FUSELAGE_SECTION_SIZE)
 
-    with pytest.raises(KeyError, match="must not define"):
+    with pytest.raises(KeyError, match="must not define sequence sections"):
         Tree.from_structured_sample(sample)
 
 

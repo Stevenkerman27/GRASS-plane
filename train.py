@@ -9,7 +9,7 @@ from torchfoldext import FoldExt
 import util
 from dynamicplot import DynamicPlot
 
-from grassdata import GRASSDataset
+from grassdata import GRASSDataset, StructuredGRASSDataset
 from grassmodel import GRASSEncoder
 from grassmodel import GRASSDecoder
 import grassmodel
@@ -34,7 +34,10 @@ if config.cuda:
 
 
 print("Loading data ...... ", end='', flush=True)
-grass_data = GRASSDataset(config.data_path)
+if config.legacy_data:
+    grass_data = GRASSDataset(config.data_path)
+else:
+    grass_data = StructuredGRASSDataset(config.structured_data_path)
 def my_collate(batch): #自定义批处理拼接函数
     return batch
 train_iter = torch.utils.data.DataLoader(grass_data, batch_size=config.batch_size, shuffle=True, collate_fn=my_collate)
@@ -126,8 +129,8 @@ for epoch in range(config.epochs):
         
         if box_nodes:
             box_loss_raw = apply_res[res_idx].sum(dim=0) / len(batch)
-            geom_loss = box_loss_raw[0]
-            cls_loss = box_loss_raw[1]
+            geom_loss = box_loss_raw[:6].sum()
+            cls_loss = box_loss_raw[6]
             res_idx += 1
         else:
             geom_loss, cls_loss = zero_tensor, zero_tensor

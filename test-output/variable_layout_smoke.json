@@ -1,0 +1,293 @@
+{
+  "schema": "conventional_variable_layout_v3",
+  "topology": "symmetric_conventional_single_vtail_v1",
+  "units": "m",
+  "sample_index": 71,
+  "random_seed": 71,
+  "max_wingspan": 1.0,
+  "tess_int": 0.025,
+  "engine_count": 4,
+  "half_components": [
+    {
+      "name": "fuselage_nose",
+      "component": 0,
+      "geometry": [
+        0.0,
+        0.0,
+        0.0,
+        0.1416378011238689,
+        0.0,
+        0.0,
+        0.05130848614041852,
+        0.04314788569678518,
+        0.16008247675810575,
+        0.10067839995916543
+      ]
+    },
+    {
+      "name": "fuselage_center",
+      "component": 0,
+      "geometry": [
+        0.1416378011238689,
+        0.0,
+        0.0,
+        0.7081890056193445,
+        0.0,
+        0.0,
+        0.16008247675810575,
+        0.10067839995916543,
+        0.16008247675810575,
+        0.10067839995916543
+      ]
+    },
+    {
+      "name": "fuselage_tail",
+      "component": 0,
+      "geometry": [
+        0.7081890056193445,
+        0.0,
+        0.0,
+        0.9442520074924594,
+        0.0,
+        0.0,
+        0.16008247675810575,
+        0.10067839995916543,
+        0.06157018336850222,
+        0.050339199979582715
+      ]
+    },
+    {
+      "name": "main_wing_right",
+      "component": 1,
+      "sections": [
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\naca64206.dat",
+          "quarter_chord_xyz": [
+            0.5324281057501652,
+            0.0,
+            0.0
+          ],
+          "chord": 0.3176000902181116,
+          "twist": -0.13272915830287238
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\du8608418.dat",
+          "quarter_chord_xyz": [
+            0.5160730697611466,
+            0.18298408645217112,
+            -0.00441781731409722
+          ],
+          "chord": 0.26192313990061317,
+          "twist": -0.09097149695376368
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\e178.dat",
+          "quarter_chord_xyz": [
+            0.5097719317765945,
+            0.5,
+            -0.012071588846202647
+          ],
+          "chord": 0.2184312015960531,
+          "twist": 0.015598209351108894
+        }
+      ]
+    },
+    {
+      "name": "engine_right_1",
+      "component": 2,
+      "geometry": [
+        0.41701303771268877,
+        0.177323352486641,
+        -0.028242370150206877,
+        0.6190486149662957,
+        0.177323352486641,
+        -0.028242370150206877,
+        0.03820530423433543,
+        0.03820530423433543,
+        0.03820530423433543,
+        0.03820530423433543
+      ]
+    },
+    {
+      "name": "engine_right_2",
+      "component": 2,
+      "geometry": [
+        0.44995757168267636,
+        0.38813328934971353,
+        -0.03914236678329264,
+        0.5987694123270996,
+        0.38813328934971353,
+        -0.03914236678329264,
+        0.0492598504234307,
+        0.0492598504234307,
+        0.0492598504234307,
+        0.0492598504234307
+      ]
+    },
+    {
+      "name": "vertical_tail",
+      "component": 1,
+      "sections": [
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\eiffel430.dat",
+          "quarter_chord_xyz": [
+            0.8182454963999352,
+            0.0,
+            0.050339199979582715
+          ],
+          "chord": 0.135504190030547,
+          "twist": -0.03574159907042514
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\sg6042.dat",
+          "quarter_chord_xyz": [
+            0.839502195866615,
+            0.0,
+            0.11031525753645464
+          ],
+          "chord": 0.1163446301404374,
+          "twist": -0.013745402629939597
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\m2.dat",
+          "quarter_chord_xyz": [
+            0.8291342930975539,
+            0.0,
+            0.13090952583958484
+          ],
+          "chord": 0.09829131773379433,
+          "twist": -0.006617559018951839
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\goe433.dat",
+          "quarter_chord_xyz": [
+            0.848204450581391,
+            0.0,
+            0.14422419884138277
+          ],
+          "chord": 0.09550179837856988,
+          "twist": 0.005794310425231642
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\goe280.dat",
+          "quarter_chord_xyz": [
+            0.87442396872303,
+            0.0,
+            0.24019203541875403
+          ],
+          "chord": 0.05534871940169141,
+          "twist": 0.06634415900265903
+        }
+      ]
+    },
+    {
+      "name": "horizontal_tail_right",
+      "component": 1,
+      "sections": [
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\naca0006.dat",
+          "quarter_chord_xyz": [
+            0.7855457151203471,
+            0.0,
+            0.11364368417129958
+          ],
+          "chord": 0.18524493125505026,
+          "twist": 0.09605433034262553
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\_fx63137.dat",
+          "quarter_chord_xyz": [
+            0.8018836056349283,
+            0.029861728432290745,
+            0.11364368417129958
+          ],
+          "chord": 0.18038849511932353,
+          "twist": 0.09365635135256753
+        },
+        {
+          "airfoil_source": "D:\\3D\\Projects\\GRASS-plane\\foildata\\processed_foil\\giiig.dat",
+          "quarter_chord_xyz": [
+            0.8441548360367006,
+            0.22070871212614512,
+            0.11364368417129958
+          ],
+          "chord": 0.12341669553222093,
+          "twist": 0.032793186636155214
+        }
+      ]
+    }
+  ],
+  "ops": [
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    2,
+    1,
+    0,
+    2,
+    1,
+    0,
+    2,
+    1,
+    0,
+    1,
+    0,
+    2,
+    1
+  ],
+  "syms": [
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "box_order": [
+    "fuselage_nose",
+    "fuselage_center",
+    "fuselage_tail",
+    "main_wing_right",
+    "engine_right_1",
+    "engine_right_2",
+    "vertical_tail",
+    "horizontal_tail_right"
+  ]
+}
