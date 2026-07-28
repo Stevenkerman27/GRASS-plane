@@ -4,6 +4,66 @@ from scipy.io import loadmat
 from enum import Enum
 import util
 
+
+SEQUENCE_TYPE_FUSELAGE = 'fuselage'
+SEQUENCE_TYPE_WING = 'wing'
+SEQUENCE_SPECS = {
+    SEQUENCE_TYPE_FUSELAGE: {
+        'component': util.COMPONENT_FUSELAGE,
+        'section_size': util.FUSELAGE_SECTION_SIZE,
+        'count_range': util.SECTION_COUNT_RANGE,
+    },
+    SEQUENCE_TYPE_WING: {
+        'component': util.COMPONENT_WING,
+        'section_size': util.CST_AIRFOIL_CODE_SIZE + 5,
+        'count_range': util.SECTION_COUNT_RANGE,
+    },
+}
+AE_COMPONENT_TYPES = (util.COMPONENT_FUSELAGE, util.COMPONENT_WING)
+AE_COMPONENT_CLASS_SIZE = len(AE_COMPONENT_TYPES)
+
+
+def sequence_spec(sequence_type):
+    if sequence_type not in SEQUENCE_SPECS:
+        raise ValueError(f'Unknown sequence type: {sequence_type}')
+    return SEQUENCE_SPECS[sequence_type]
+
+
+def sequence_section_count_range(sequence_type):
+    return sequence_spec(sequence_type)['count_range']
+
+
+def sequence_max_sections(sequence_type):
+    return sequence_section_count_range(sequence_type)[1]
+
+
+def sequence_section_size(sequence_type):
+    return sequence_spec(sequence_type)['section_size']
+
+
+def sequence_type_for_component(component):
+    for sequence_type, spec in SEQUENCE_SPECS.items():
+        if spec['component'] == component:
+            return sequence_type
+    raise ValueError(f'Component {component} is not a structured sequence component')
+
+
+def section_mask(section_count, device=None, sequence_type=None):
+    """Derive the only valid padding mask from a tensor of section counts."""
+    import torch
+
+    if sequence_type is None:
+        minimum, maximum = util.SECTION_COUNT_RANGE
+    else:
+        minimum, maximum = sequence_section_count_range(sequence_type)
+    count = torch.as_tensor(section_count, device=device, dtype=torch.long).reshape(-1)
+    if torch.any(count < minimum) or torch.any(count > maximum):
+        raise ValueError(
+            f'section_count must be in [{minimum}, {maximum}], '
+            f'got {count.tolist()}'
+        )
+    return torch.arange(maximum, device=count.device).unsqueeze(0) < count.unsqueeze(1)
+
 class Tree(object):
     class NodeType(Enum):
         BOX = 0  # box node
@@ -75,9 +135,25 @@ def _as_row_tensor(value, expected_size, field_name):
     return tensor
 
 
-def _as_component_sections(value, component, field_name):
+def _sequence_type_from_box(box, component, box_index):
+    if "sequence_type" not in box:
+        raise KeyError(f'boxes[{box_index}] missing required key: sequence_type')
+    sequence_type = box["sequence_type"]
+    spec = sequence_spec(sequence_type)
+    if spec['component'] != component:
+        raise ValueError(
+            f'boxes[{box_index}].sequence_type {sequence_type!r} does not match '
+            f'component {util.component_name(component)!r}'
+        )
+    return sequence_type
+
+
+def _as_component_sections(value, sequence_type, field_name):
     tensor = torch.as_tensor(value, dtype=torch.float32)
-    expected_shape = (util.MAX_SECTION_COUNT, util.COMPONENT_SECTION_SIZES[component])
+    expected_shape = (
+        sequence_max_sections(sequence_type),
+        sequence_section_size(sequence_type),
+    )
     if tuple(tensor.shape) != expected_shape:
         raise ValueError(f'{field_name} must have shape {list(expected_shape)}, got {list(tensor.shape)}')
     if not torch.isfinite(tensor).all():
@@ -85,11 +161,11 @@ def _as_component_sections(value, component, field_name):
     return tensor.unsqueeze(0)
 
 
-def _as_section_count(value, field_name):
+def _as_section_count(value, field_name, sequence_type):
     tensor = torch.as_tensor(value, dtype=torch.long).reshape(-1)
     if tensor.numel() != 1:
         raise ValueError(f'{field_name} must contain exactly one value, got {tensor.numel()}')
-    util.section_mask(tensor)
+    section_mask(tensor, sequence_type=sequence_type)
     return tensor
 
 
@@ -111,7 +187,8 @@ def _validate_structured_box(box, box_index):
         raise KeyError(f"boxes[{box_index}] missing required key: {"component"}")
 
     component = _component_from_value(box["component"])
-    if component in util.COMPONENT_SECTION_SIZES:
+    if component in AE_COMPONENT_TYPES:
+        sequence_type = _sequence_type_from_box(box, component, box_index)
         for key in ("sections", "section_count"):
             if key not in box:
                 name = util.component_name(component)
@@ -121,14 +198,15 @@ def _validate_structured_box(box, box_index):
             raise KeyError(f"{name} boxes[{box_index}] must not define {"geometry"}")
         structured_box = {
             "component": component,
+            "sequence_type": sequence_type,
             "sections": _as_component_sections(
-                box["sections"], component, f"boxes[{box_index}].{"sections"}"
+                box["sections"], sequence_type, f"boxes[{box_index}].{"sections"}"
             ),
             "section_count": _as_section_count(
-                box["section_count"], f"boxes[{box_index}].{"section_count"}"
+                box["section_count"], f"boxes[{box_index}].{"section_count"}", sequence_type
             ),
         }
-        mask = util.section_mask(structured_box["section_count"])
+        mask = section_mask(structured_box["section_count"], sequence_type=sequence_type)
         padded = structured_box["sections"][~mask]
         if not torch.equal(padded, torch.zeros_like(padded)):
             raise ValueError(f"boxes[{box_index}].{"sections"} padding must be zero")
@@ -147,7 +225,7 @@ def _validate_structured_box(box, box_index):
                 f"boxes[{box_index}].{"geometry"}",
             ),
         }
-    if "sections" in box and component not in util.COMPONENT_SECTION_SIZES:
+    if "sections" in box and component not in AE_COMPONENT_TYPES:
         name = util.component_name(component)
         raise KeyError(f"{name} boxes[{box_index}] must not define {"sections"}")
 

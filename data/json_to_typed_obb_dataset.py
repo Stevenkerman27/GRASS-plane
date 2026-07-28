@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import cst_airfoil_code_cache
+import conventional_canard_dataset_common as conventional_canard
 import grassdata
 import util
 import aircraft_dataset_common as common
@@ -22,19 +24,20 @@ import aircraft_dataset_common as common
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Convert flying-wing geometry JSON files to structured OBB .pt data.")
-    parser.add_argument("--input-dir", type=Path, default=DATA_DIR / "flying_wing_dataset")
-    parser.add_argument("--output", type=Path, default=DATA_DIR / "flying_wing_dataset" / "flying_wing_dataset.pt")
+    parser.add_argument("--input-dir", type=Path, default=DATA_DIR / "conventional_canard_dataset")
+    parser.add_argument("--output", type=Path, default=DATA_DIR / "conventional_canard_dataset" / "conventional_canard_dataset.pt")
     parser.add_argument("--cache", type=Path, default=DATA_DIR / "cst_airfoil_code_cache.pt")
     parser.add_argument("--expected-count", type=int, default=200)
     return parser.parse_args()
 
 
-def wing_sections(component_name, source_sections, airfoil_cache):
+def wing_sections(component_name, sequence_type, source_sections, airfoil_cache):
+    expected_range = grassdata.sequence_section_count_range(sequence_type)
     count = len(source_sections)
-    if not util.MIN_SECTION_COUNT <= count <= util.MAX_SECTION_COUNT:
+    if not expected_range[0] <= count <= expected_range[1]:
         raise ValueError(
             f'{component_name} section count must be in '
-            f'[{util.MIN_SECTION_COUNT}, {util.MAX_SECTION_COUNT}], got {count}'
+            f'[{expected_range[0]}, {expected_range[1]}], got {count}'
         )
     sections = []
     for section_index, source_section in enumerate(source_sections):
@@ -58,21 +61,26 @@ def wing_sections(component_name, source_sections, airfoil_cache):
                 'expected 29'
             )
         sections.append(section)
-    padded = torch.zeros((util.MAX_SECTION_COUNT, util.COMPONENT_SECTION_SIZES[util.COMPONENT_WING]), dtype=torch.float32)
+    padded = torch.zeros(
+        (grassdata.sequence_max_sections(sequence_type), grassdata.sequence_section_size(sequence_type)),
+        dtype=torch.float32,
+    )
     padded[:count] = torch.stack(sections)
-    if padded.shape != (util.MAX_SECTION_COUNT, util.COMPONENT_SECTION_SIZES[util.COMPONENT_WING]):
+    expected_shape = (grassdata.sequence_max_sections(sequence_type), grassdata.sequence_section_size(sequence_type))
+    if tuple(padded.shape) != expected_shape:
         raise ValueError(
             f'{component_name} sections have unexpected shape {list(padded.shape)}'
         )
     return padded, count
 
 
-def fuselage_sections(source_sections):
+def fuselage_sections(source_sections, sequence_type):
     count = len(source_sections)
-    if not util.MIN_SECTION_COUNT <= count <= util.MAX_SECTION_COUNT:
+    expected_range = grassdata.sequence_section_count_range(sequence_type)
+    if not expected_range[0] <= count <= expected_range[1]:
         raise ValueError(
             f'fuselage section count must be in '
-            f'[{util.MIN_SECTION_COUNT}, {util.MAX_SECTION_COUNT}], got {count}'
+            f'[{expected_range[0]}, {expected_range[1]}], got {count}'
         )
     sections = torch.as_tensor(source_sections, dtype=torch.float32)
     expected_shape = (count, util.FUSELAGE_SECTION_SIZE)
@@ -80,7 +88,10 @@ def fuselage_sections(source_sections):
         raise ValueError(
             f'fuselage sections must have shape {list(expected_shape)}, got {list(sections.shape)}'
         )
-    padded = torch.zeros((util.MAX_SECTION_COUNT, util.FUSELAGE_SECTION_SIZE), dtype=torch.float32)
+    padded = torch.zeros(
+        (grassdata.sequence_max_sections(sequence_type), grassdata.sequence_section_size(sequence_type)),
+        dtype=torch.float32,
+    )
     padded[:count] = sections
     return padded, count
 
@@ -89,22 +100,26 @@ def build_structured_sample(payload, airfoil_cache):
     boxes = []
     for component_payload in payload["half_components"]:
         component = component_payload["component"]
+        sequence_type = component_payload['sequence_type']
         if component == util.COMPONENT_WING:
             component_name = component_payload["name"]
             sections, count = wing_sections(
                 component_name,
+                sequence_type,
                 component_payload["sections"],
                 airfoil_cache,
             )
             box = {
                 "component": component,
+                'sequence_type': sequence_type,
                 "sections": sections,
                 "section_count": count,
             }
         elif component == util.COMPONENT_FUSELAGE:
-            sections, count = fuselage_sections(component_payload["sections"])
+            sections, count = fuselage_sections(component_payload["sections"], sequence_type)
             box = {
                 "component": component,
+                'sequence_type': sequence_type,
                 "sections": sections,
                 "section_count": count,
             }
@@ -123,7 +138,16 @@ def load_payloads(input_dir):
     json_paths = sorted(input_dir.glob("sample_*.json"))
     if not json_paths:
         raise ValueError(f"No sample JSON files found in {input_dir}")
-    payloads = [common.load_geometry_payload(path) for path in json_paths]
+    payloads = []
+    for path in json_paths:
+        schema = json.loads(path.read_text(encoding='utf-8')).get('schema')
+        if schema == common.GEOMETRY_SCHEMA:
+            payload = common.load_geometry_payload(path)
+        elif schema == conventional_canard.GEOMETRY_SCHEMA:
+            payload = conventional_canard.load_geometry_payload(path)
+        else:
+            raise ValueError(f'Unsupported geometry schema in {path}: {schema!r}')
+        payloads.append(payload)
     sample_indices = [payload["sample_index"] for payload in payloads]
     if sample_indices != sorted(sample_indices) or len(set(sample_indices)) != len(sample_indices):
         raise ValueError("Sample JSON files do not contain unique ascending sample_index values")

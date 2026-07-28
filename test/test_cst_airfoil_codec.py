@@ -37,7 +37,7 @@ def test_cst_code_is_24d_and_round_trips():
     code = build_cst_code()
     assert code.shape == (util.CST_AIRFOIL_CODE_SIZE,)
     unpacked = cst_airfoil_codec.unpack_cst_airfoil_code(code)
-    assert unpacked[util.AIRFOIL_UPPER_SURFACE]['shape_coefficients'].shape == (
+    assert unpacked['upper']['shape_coefficients'].shape == (
         util.CST_SURFACE_SHAPE_COEFFICIENTS,
     )
     assert unpacked['class_function_n1'].item() == pytest.approx(0.5)
@@ -73,12 +73,12 @@ def test_cst_symmetric_code_mirrors_upper_surface_about_zero():
     )
     symmetric = cst_airfoil_codec.unpack_cst_airfoil_code(symmetric_code)
     assert torch.allclose(
-        symmetric[util.AIRFOIL_LOWER_SURFACE]['shape_coefficients'],
-        -unpacked[util.AIRFOIL_UPPER_SURFACE]['shape_coefficients'],
+        symmetric['lower']['shape_coefficients'],
+        -unpacked['upper']['shape_coefficients'],
     )
     assert torch.allclose(
-        symmetric[util.AIRFOIL_LOWER_SURFACE]['trailing_edge_y'],
-        -unpacked[util.AIRFOIL_UPPER_SURFACE]['trailing_edge_y'],
+        symmetric['lower']['trailing_edge_y'],
+        -unpacked['upper']['trailing_edge_y'],
     )
 
 

@@ -34,7 +34,7 @@ def test_fuselage_station_sampling_is_random_and_valid():
     first = common.sample_fuselage_xsecs(random.Random(17), 1.0, 1.0, 1.0)
     second = common.sample_fuselage_xsecs(random.Random(18), 1.0, 1.0, 1.0)
 
-    assert util.MIN_SECTION_COUNT <= len(first) <= util.MAX_SECTION_COUNT
+    assert util.SECTION_COUNT_RANGE[0] <= len(first) <= util.SECTION_COUNT_RANGE[1]
     assert first != second
     for xsec in first:
         assert 0.0 <= xsec["x"] <= 1.0
@@ -64,7 +64,7 @@ def test_quadratic_wing_plan_uses_uniform_sections_and_configured_bounds():
             assert section["leading_edge_xyz"][1] == fraction * common.MAX_WINGSPAN / 2.0
             assert common.WING_CHORD_RANGE[0] <= section["chord"] <= common.WING_CHORD_RANGE[1]
     assert set(section_counts).issubset(
-        set(range(util.MIN_SECTION_COUNT, util.MAX_SECTION_COUNT + 1))
+        set(range(util.SECTION_COUNT_RANGE[0], util.SECTION_COUNT_RANGE[1] + 1))
     )
 
 
@@ -105,7 +105,7 @@ def test_flying_wing_converter_emits_padded_29d_cst_sections(monkeypatch):
     ]
     assert len(wing_boxes) == 1
     assert all(
-        box["sections"].shape == (util.MAX_SECTION_COUNT, util.COMPONENT_SECTION_SIZES[util.COMPONENT_WING])
+        box["sections"].shape == (util.SECTION_COUNT_RANGE[1], util.CST_AIRFOIL_CODE_SIZE + 5)
         for box in wing_boxes
     )
     assert [box["section_count"] for box in wing_boxes] == [

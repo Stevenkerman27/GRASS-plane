@@ -6,6 +6,7 @@ data/cst_airfoil_code_cache.pt
 data/airfoil_fit_visualizations/
 data/cst_precompute*.log
 data/flying_wing_dataset
+data/conventional_canard_dataset
 Grass-matlab/
 .vscode/
 foildata/coord_seligFmt

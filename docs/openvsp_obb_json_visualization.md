@@ -56,7 +56,7 @@ D:\Software\anaconda\envs\myml\python.exe data\visualize_dataset.py --index 17
 D:\Software\anaconda\envs\myml\python.exe data\visualize_dataset.py --seed 20260711
 ```
 
-批量生成、JSON-to-PT 转换和数据文件位置详见 `docs/flying_wing_dataset_generation.md`。单机 JSON 仍是 `test/create_obb_vsp.py` 的中间验证产物，不再有独立的 JSON 绘图入口。
+批量生成、JSON-to-PT 转换和数据文件位置详见 `docs/aircraft_dataset_generation.md`。单机 JSON 仍是 `test/create_obb_vsp.py` 的中间验证产物，不再有独立的 JSON 绘图入口。
 
 ## 3. OpenVSP 机身和短舱
 

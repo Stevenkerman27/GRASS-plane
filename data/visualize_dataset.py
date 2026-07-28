@@ -1,4 +1,4 @@
-"""Randomly show one full flying-wing OBB from the structured dataset."""
+"""Randomly show one full aircraft OBB from a generated structured dataset."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 
 
@@ -16,7 +17,9 @@ REPO_ROOT = DATA_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import cst_airfoil_codec
 import grassdata
+import project_paths
 import util
 
 
@@ -28,13 +31,12 @@ DEFAULT_OPENVSP_EXECUTABLE = Path(r"D:\3D\Projects\OpenVSP-3.51.0-win64\vsp.exe"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Randomly show one aircraft OBB from flying_wing_dataset.pt.")
-    parser.add_argument("--dataset", type=Path, default=DATA_DIR / "flying_wing_dataset" / "flying_wing_dataset.pt")
-    parser.add_argument("--index", type=int, default=None, help="Optional deterministic sample index.")
-    parser.add_argument("--seed", type=int, default=None, help="Optional seed for random sample selection.")
+    parser = argparse.ArgumentParser(description="Randomly show one aircraft OBB from a generated dataset.")
+    parser.add_argument("--layout", choices=tuple(project_paths.AIRCRAFT_DATASET_SPECS), default=None)
+    parser.add_argument("--index", type=int, default=None, help="Sample index within --layout.")
+    parser.add_argument("--seed", type=int, default=None, help="Optional seed for layout and sample selection.")
     parser.add_argument("--backend", default=None, help="Optional interactive matplotlib backend, for example TkAgg.")
     parser.add_argument("--vsp-exe", type=Path, default=DEFAULT_OPENVSP_EXECUTABLE)
-    parser.add_argument("--vsp-dir", type=Path, default=DATA_DIR / "flying_wing_dataset")
     parser.add_argument("--no-open-vsp", dest="open_vsp", action="store_false")
     parser.set_defaults(open_vsp=True)
     return parser.parse_args()
@@ -47,15 +49,21 @@ def assert_interactive_backend(matplotlib):
         raise RuntimeError(f"Matplotlib backend {backend!r} cannot show an interactive OBB window")
 
 
-def select_sample(dataset_path, index, seed):
-    dataset = grassdata.StructuredGRASSDataset(dataset_path)
+def select_aircraft_sample(layout, index, seed):
+    if index is not None and layout is None:
+        raise ValueError("--index requires --layout because sample indices are dataset-local")
+    chooser = random.Random(seed)
+    selected_layout = layout
+    if selected_layout is None:
+        selected_layout = chooser.choice(tuple(project_paths.AIRCRAFT_DATASET_SPECS))
+    dataset_spec = project_paths.AIRCRAFT_DATASET_SPECS[selected_layout]
+    dataset = grassdata.StructuredGRASSDataset(dataset_spec['dataset'])
     if index is not None:
         if not 0 <= index < len(dataset):
             raise IndexError(f"index must be in [0, {len(dataset) - 1}], got {index}")
-        return index, dataset[index]
-    chooser = random.Random(seed)
+        return selected_layout, dataset_spec, index, dataset[index]
     selected_index = chooser.randrange(len(dataset))
-    return selected_index, dataset[selected_index]
+    return selected_layout, dataset_spec, selected_index, dataset[selected_index]
 
 
 def corresponding_vsp_path(vsp_dir, index):
@@ -76,7 +84,7 @@ def open_vsp(vsp_executable, vsp_path):
 
 def component_geometry(node):
     component = node.box["component"]
-    if component in util.COMPONENT_SECTION_SIZES:
+    if component in grassdata.AE_COMPONENT_TYPES:
         return component, {
             "sections": node.box["sections"].detach().cpu().squeeze(0),
             "section_count": int(node.box["section_count"].item()),
@@ -105,7 +113,6 @@ def reflect_geometry(component, geometry, symmetry):
         sections = geometry["sections"].clone()
         count = geometry["section_count"]
         sections[:count, 25] *= -1.0
-        sections[:count, 28] *= -1.0
         return component, {
             "sections": sections,
             "section_count": count,
@@ -195,30 +202,53 @@ def draw_elliptical_body(ax, geometry, label):
     ax.text(center[0], center[1], center[2], label, color="black", fontsize=9)
 
 
+def rotate_about_axis(vector, axis, angle):
+    return (
+        vector * np.cos(angle)
+        + np.cross(axis, vector) * np.sin(angle)
+        + axis * np.dot(axis, vector) * (1.0 - np.cos(angle))
+    )
+
+
+def wing_section_points(section):
+    import numpy as np
+
+    twist_axis = np.array([0.0, 1.0, 0.0], dtype=float)
+    chord_axis = rotate_about_axis(
+        np.array([1.0, 0.0, 0.0], dtype=float), twist_axis, float(section[28])
+    )
+    thickness_axis = rotate_about_axis(
+        np.array([0.0, 0.0, 1.0], dtype=float), twist_axis, float(section[28])
+    )
+    curve = cst_airfoil_codec.decode_cst_airfoil_code(
+        torch.as_tensor(section[:util.CST_AIRFOIL_CODE_SIZE], dtype=torch.float32),
+        num_output_points=util.FREE_DECODE_ERROR_AIRFOIL_POINTS,
+    ).squeeze(0).detach().cpu().numpy()
+    return (
+        section[24:27]
+        + curve[:, :1] * float(section[27]) * chord_axis
+        + curve[:, 1:2] * float(section[27]) * thickness_axis
+    )
+
+
 def draw_wing_planform(ax, wing, color, label):
     import numpy as np
 
     count = wing["section_count"]
     sections = wing["sections"][:count].numpy()
-    leading_edges = sections[:, 24:27]
-    span_axis = leading_edges[-1] - leading_edges[0]
-    span_axis /= np.linalg.norm(span_axis)
-    chord_axis = np.array([1.0, 0.0, 0.0])
-    trailing_edges = []
-    for section in sections:
-        angle = section[28]
-        rotated_chord = (
-            chord_axis * np.cos(angle)
-            + np.cross(span_axis, chord_axis) * np.sin(angle)
-            + span_axis * np.dot(span_axis, chord_axis) * (1.0 - np.cos(angle))
-        )
-        leading_edge = section[24:27]
-        chord = section[27]
-        trailing_edges.append(leading_edge + chord * rotated_chord)
-    for edge_index in range(count - 1):
-        corners = (leading_edges[edge_index], trailing_edges[edge_index], trailing_edges[edge_index + 1], leading_edges[edge_index + 1], leading_edges[edge_index])
-        ax.plot([corner[0] for corner in corners], [corner[1] for corner in corners], [corner[2] for corner in corners], color=color, linewidth=1.6)
-    center = leading_edges.mean(axis=0)
+    profiles = [wing_section_points(section) for section in sections]
+    for profile in profiles:
+        ax.plot(profile[:, 0], profile[:, 1], profile[:, 2], color=color, linewidth=1.0)
+    for first, second in zip(profiles[:-1], profiles[1:], strict=True):
+        for point_index in (0, first.shape[0] // 2, first.shape[0] - 1):
+            ax.plot(
+                [first[point_index, 0], second[point_index, 0]],
+                [first[point_index, 1], second[point_index, 1]],
+                [first[point_index, 2], second[point_index, 2]],
+                color=color,
+                linewidth=1.3,
+            )
+    center = np.mean(np.concatenate(profiles, axis=0), axis=0)
     ax.text(center[0], center[1], center[2], label, color="black", fontsize=9)
 
 
@@ -227,10 +257,15 @@ def set_aircraft_axes(ax, components):
 
     points = []
     for component, geometry in components:
-        if component in util.COMPONENT_SECTION_SIZES:
+        if component in grassdata.AE_COMPONENT_TYPES:
             count = geometry["section_count"]
-            position_slice = slice(24, 27) if component == util.COMPONENT_WING else slice(0, 3)
-            points.extend(geometry["sections"][:count, position_slice].tolist())
+            if component == util.COMPONENT_WING:
+                points.extend(np.concatenate(
+                    [wing_section_points(section) for section in geometry["sections"][:count]],
+                    axis=0,
+                ).tolist())
+            else:
+                points.extend(geometry["sections"][:count, :3].tolist())
         else:
             points.extend((geometry[0:3], geometry[3:6]))
     points = np.asarray(points, dtype=float)
@@ -243,14 +278,14 @@ def set_aircraft_axes(ax, components):
     ax.set_box_aspect((1.0, 1.0, 0.6))
 
 
-def show_aircraft(index, tree):
+def show_aircraft(layout_label, index, tree):
     import matplotlib
     import matplotlib.pyplot as plt
 
     assert_interactive_backend(matplotlib)
     components = expand_tree(tree.root)
     if not components:
-        raise ValueError("Expanded flying-wing topology contains no components")
+        raise ValueError("Expanded aircraft topology contains no components")
     fig = plt.figure(figsize=(9, 6))
     ax = fig.add_subplot(111, projection="3d")
     cmap = plt.get_cmap("jet_r")
@@ -269,7 +304,7 @@ def show_aircraft(index, tree):
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Z (m)")
-    ax.set_title(f"Flying-Wing OBB - Sample {index:04d}")
+    ax.set_title(f"{layout_label} OBB - Sample {index:04d}")
     ax.view_init(elev=22, azim=-58)
     print("Matplotlib backend:", matplotlib.get_backend(), flush=True)
     print(f"Showing sample {index:04d}. Close the window to continue.", flush=True)
@@ -282,11 +317,13 @@ def main():
         import matplotlib
 
         matplotlib.use(args.backend)
-    index, tree = select_sample(args.dataset, args.index, args.seed)
+    _layout, dataset_spec, index, tree = select_aircraft_sample(
+        args.layout, args.index, args.seed
+    )
     if args.open_vsp:
-        vsp_path = corresponding_vsp_path(args.vsp_dir, index)
+        vsp_path = corresponding_vsp_path(dataset_spec['directory'], index)
         open_vsp(args.vsp_exe, vsp_path)
-    show_aircraft(index, tree)
+    show_aircraft(dataset_spec['label'], index, tree)
 
 
 if __name__ == "__main__":

@@ -264,8 +264,8 @@ def unpack_cst_airfoil_code(code):
     _as_batched_class_exponent(n1, 'class_function_n1')
     _as_batched_class_exponent(n2, 'class_function_n2')
     result = {
-        util.AIRFOIL_UPPER_SURFACE: {'shape_coefficients': upper, 'trailing_edge_y': upper_te},
-        util.AIRFOIL_LOWER_SURFACE: {'shape_coefficients': lower, 'trailing_edge_y': lower_te},
+        'upper': {'shape_coefficients': upper, 'trailing_edge_y': upper_te},
+        'lower': {'shape_coefficients': lower, 'trailing_edge_y': lower_te},
         'class_function_n1': n1,
         'class_function_n2': n2,
     }
@@ -276,7 +276,7 @@ def unpack_cst_airfoil_code(code):
                 'trailing_edge_y': values['trailing_edge_y'].squeeze(0),
             }
             for surface_name, values in result.items()
-            if surface_name in (util.AIRFOIL_UPPER_SURFACE, util.AIRFOIL_LOWER_SURFACE)
+            if surface_name in ('upper', 'lower')
         }
         unpacked['class_function_n1'] = n1.squeeze(0)
         unpacked['class_function_n2'] = n2.squeeze(0)
@@ -324,10 +324,10 @@ def decode_cst_airfoil_code(code, num_output_points=util.AIRFOIL_DEFAULT_OUTPUT_
     upper_x = upper_x.expand(code_tensor.size(0), -1)
     lower_x = lower_x.expand(code_tensor.size(0), -1)
     return _decode_at_x(
-        unpacked[util.AIRFOIL_UPPER_SURFACE]['shape_coefficients'],
-        unpacked[util.AIRFOIL_LOWER_SURFACE]['shape_coefficients'],
-        unpacked[util.AIRFOIL_UPPER_SURFACE]['trailing_edge_y'],
-        unpacked[util.AIRFOIL_LOWER_SURFACE]['trailing_edge_y'],
+        unpacked['upper']['shape_coefficients'],
+        unpacked['lower']['shape_coefficients'],
+        unpacked['upper']['trailing_edge_y'],
+        unpacked['lower']['trailing_edge_y'],
         unpacked['class_function_n1'],
         unpacked['class_function_n2'],
         upper_x,
@@ -342,7 +342,7 @@ def symmetric_airfoil_code_from_upper(airfoil_code, symmetry_line_y):
             f'y={0.0}, got {symmetry_line_y}'
         )
     unpacked = unpack_cst_airfoil_code(airfoil_code)
-    upper = unpacked[util.AIRFOIL_UPPER_SURFACE]
+    upper = unpacked['upper']
     return pack_cst_airfoil_code(
         upper['shape_coefficients'],
         -upper['shape_coefficients'],
