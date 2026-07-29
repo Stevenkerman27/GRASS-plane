@@ -6,16 +6,23 @@ from pathlib import Path
 import matplotlib
 import torch
 import yaml
-from torch.utils.data import ConcatDataset, DataLoader, random_split
+from torch.utils.data import ConcatDataset, DataLoader, Subset, random_split
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import grassdata
 import section_autoencoder
+import section_parameter_codec
 import util
 from grassdata import StructuredGRASSDataset
-from train_autoencoder import choose_device, current_learning_rate, make_learning_rate_scheduler, set_seed
+from train_autoencoder import (
+    choose_device,
+    current_learning_rate,
+    make_autoencoder_optimizer,
+    make_learning_rate_scheduler,
+    set_seed,
+)
 
 
 def make_aircraft_splits(config):
@@ -27,6 +34,18 @@ def make_aircraft_splits(config):
         raise ValueError('--structured_data_paths must contain at least one dataset path.')
 
     dataset = ConcatDataset([StructuredGRASSDataset(path) for path in config.structured_data_paths])
+    if config.overfit:
+        if len(dataset) < util.SECTION_AE_OVERFIT_AIRCRAFT_COUNT:
+            raise ValueError(
+                'dataset must contain at least '
+                f'{util.SECTION_AE_OVERFIT_AIRCRAFT_COUNT} aircraft for --overfit.'
+            )
+        indices = torch.randperm(
+            len(dataset), generator=torch.Generator().manual_seed(config.ae_seed)
+        )[:util.SECTION_AE_OVERFIT_AIRCRAFT_COUNT].tolist()
+        aircraft = Subset(dataset, indices)
+        return aircraft, aircraft
+
     validation_size = max(1, int(round(len(dataset) * config.ae_validation_fraction)))
     training_size = len(dataset) - validation_size
     if training_size < 1:
@@ -36,6 +55,13 @@ def make_aircraft_splits(config):
         [training_size, validation_size],
         generator=torch.Generator().manual_seed(config.ae_seed),
     )
+
+
+def section_ae_checkpoint_dir(config):
+    directory = Path(config.section_ae_checkpoint_dir)
+    if config.overfit:
+        return directory / 'overfit'
+    return directory
 
 
 def make_leaf_loaders(training_aircraft, validation_aircraft, sequence_type, config):
@@ -70,7 +96,7 @@ def run_epoch(model, loader, optimizer, device, training, teacher_forcing_probab
         with torch.set_grad_enabled(training):
             predicted_sections, count_logits = model(sections, section_count, probability)
             loss_vectors = section_autoencoder.reconstruction_losses(
-                model.sequence_type, predicted_sections, count_logits, sections, section_count
+                model, predicted_sections, count_logits, sections, section_count
             )
             losses = {name: value.mean() for name, value in loss_vectors.items()}
             if training:
@@ -88,7 +114,7 @@ def run_epoch(model, loader, optimizer, device, training, teacher_forcing_probab
                 free_probability = torch.zeros(sections.size(0), dtype=sections.dtype, device=device)
                 free_sections, free_count_logits = model(sections, section_count, free_probability)
                 free_vectors = section_autoencoder.reconstruction_losses(
-                    model.sequence_type, free_sections, free_count_logits, sections, section_count
+                    model, free_sections, free_count_logits, sections, section_count
                 )
             if not free_metric_sums:
                 free_metric_sums = {name: 0.0 for name in free_vectors}
@@ -105,58 +131,74 @@ def save_loss_curves(history, free_history, learning_rate_history, probability_h
     plot_count = len(metric_names) + 3
     columns = 2
     figure, axes = plt.subplots(ceil(plot_count / columns), columns, figsize=(12, 3.5 * ceil(plot_count / columns)))
-    axes = axes.flat
+    axes = list(axes.flat)
     epochs = range(1, len(history['train']['total']) + 1)
-    for axis, metric_name in zip(axes, metric_names):
+    for axis, metric_name in zip(axes[:len(metric_names)], metric_names):
         axis.plot(epochs, history['train'][metric_name], label='train')
         axis.plot(epochs, history['validation'][metric_name], label='validation_teacher')
         axis.set_title(metric_name)
         axis.set_yscale('log')
         axis.grid(True, alpha=0.3)
         axis.legend()
-    axis = next(axes)
+    axis = axes[len(metric_names)]
     axis.plot(epochs, free_history['total'], label='validation_free')
     axis.set_title('free_total')
     axis.set_yscale('log')
     axis.grid(True, alpha=0.3)
     axis.legend()
-    axis = next(axes)
+    axis = axes[len(metric_names) + 1]
     axis.plot(epochs, learning_rate_history)
     axis.set_title('learning_rate')
     axis.set_yscale('log')
     axis.grid(True, alpha=0.3)
-    axis = next(axes)
+    axis = axes[len(metric_names) + 2]
     axis.plot(epochs, probability_history)
     axis.set_title('teacher_forcing_probability')
     axis.set_ylim(-0.05, 1.05)
     axis.grid(True, alpha=0.3)
-    for axis in axes:
+    for axis in axes[plot_count:]:
         axis.set_visible(False)
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
 
 
+def section_ae_final_epoch(sequence_type):
+    if sequence_type == grassdata.SEQUENCE_TYPE_WING:
+        return util.SECTION_AE_WING_FINAL_EPOCH
+    if sequence_type == grassdata.SEQUENCE_TYPE_FUSELAGE:
+        return util.SECTION_AE_FUSELAGE_FINAL_EPOCH
+    raise ValueError(f'Unsupported section sequence type: {sequence_type}')
+
+
 def train_sequence_type(sequence_type, training_aircraft, validation_aircraft, config, device):
     train_loader, validation_loader = make_leaf_loaders(
         training_aircraft, validation_aircraft, sequence_type, config
     )
-    model = section_autoencoder.SectionAutoencoder(sequence_type, config).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.ae_lr)
+    parameter_statistics = section_parameter_codec.fit_section_parameter_statistics(
+        train_loader.dataset, sequence_type
+    )
+    model = section_autoencoder.SectionAutoencoder(
+        sequence_type, config, parameter_statistics
+    ).to(device)
+    optimizer = make_autoencoder_optimizer(model.parameters(), config)
     scheduler = make_learning_rate_scheduler(optimizer, config)
-    checkpoint_dir = Path(config.section_ae_checkpoint_dir)
+    checkpoint_dir = section_ae_checkpoint_dir(config)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    final_epoch = section_ae_final_epoch(sequence_type)
+    if final_epoch < 1:
+        raise ValueError(f'final epoch must be at least 1, got {final_epoch}.')
     print(
         f'{sequence_type}: train leaves={len(train_loader.dataset)}; '
-        f'validation leaves={len(validation_loader.dataset)}'
+        f'validation leaves={len(validation_loader.dataset)}; '
+        f'final_epoch={final_epoch}'
     )
 
     history = {'train': None, 'validation': None}
     free_history = None
     learning_rate_history = []
     probability_history = []
-    best_validation_total = float('inf')
-    for epoch in range(1, config.ae_epochs + 1):
+    for epoch in range(1, final_epoch + 1):
         probability = util.ae_teacher_forcing_probability(epoch, config)
         train_metrics, _ = run_epoch(
             model, train_loader, optimizer, device, True, probability, config.ae_gradient_clip
@@ -180,19 +222,20 @@ def train_sequence_type(sequence_type, training_aircraft, validation_aircraft, c
         probability_history.append(probability)
         if epoch % config.ae_log_every == 0:
             print(
-                f'{sequence_type} epoch={epoch}/{config.ae_epochs} '
+                f'{sequence_type} epoch={epoch}/{final_epoch} '
                 f'train_total={train_metrics["total"]:.6f} '
                 f'validation_total={validation_metrics["total"]:.6f} '
                 f'free_total={free_validation_metrics["total"]:.6f} '
                 f'p_teacher={probability:.6f} learning_rate={learning_rate:.8g}'
             )
-        checkpoint = section_autoencoder.build_checkpoint(
-            model, epoch, optimizer, scheduler, validation_metrics, config
-        )
-        torch.save(checkpoint, checkpoint_dir / f'last_{sequence_type}.pt')
-        if validation_metrics['total'] < best_validation_total:
-            best_validation_total = validation_metrics['total']
-            torch.save(checkpoint, checkpoint_dir / f'best_{sequence_type}.pt')
+        if epoch % util.AE_CHECKPOINT_EVERY == 0 or epoch == final_epoch:
+            checkpoint = section_autoencoder.build_checkpoint(
+                model, epoch, optimizer, scheduler, validation_metrics, config
+            )
+            torch.save(
+                checkpoint,
+                section_autoencoder.final_checkpoint_path(checkpoint_dir, sequence_type),
+            )
 
     save_loss_curves(
         history,
@@ -221,6 +264,7 @@ def main():
     config = util.get_args()
     config.ae_rnn_type = util.validate_ae_rnn_type(config.ae_rnn_type)
     util.validate_ae_teacher_forcing_schedule(config)
+    util.validate_ae_weight_decay(config.ae_weight_decay)
     device = choose_device(config)
     set_seed(config.ae_seed, device.type == 'cuda')
     training_aircraft, validation_aircraft = make_aircraft_splits(config)
@@ -228,7 +272,9 @@ def main():
         f'Using {device}; train aircraft={len(training_aircraft)}; '
         f'validation aircraft={len(validation_aircraft)}; '
         f'recurrent_cell={config.ae_rnn_type}; feature_size={config.feature_size}; '
-        f'hidden_size={config.hidden_size}'
+        f'hidden_size={config.hidden_size}; overfit={config.overfit}; '
+        f'weight_decay={config.ae_weight_decay}; '
+        f'checkpoint_dir={section_ae_checkpoint_dir(config)}'
     )
     for sequence_type in (grassdata.SEQUENCE_TYPE_WING, grassdata.SEQUENCE_TYPE_FUSELAGE):
         train_sequence_type(sequence_type, training_aircraft, validation_aircraft, config, device)

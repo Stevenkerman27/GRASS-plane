@@ -145,7 +145,7 @@ def normalize_airfoil_chord_coordinates(resampled_coords, leading_edge_index):
     ])
     normalized_coords[leading_edge_index] = [
         util.AIRFOIL_LEADING_EDGE_X,
-        util.AIRFOIL_LEADING_EDGE_Y,
+        0.0,
     ]
     normalized_coords[0, 0] = util.AIRFOIL_TRAILING_EDGE_X
     normalized_coords[-1, 0] = util.AIRFOIL_TRAILING_EDGE_X

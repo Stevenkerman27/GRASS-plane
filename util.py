@@ -1,3 +1,4 @@
+import math
 from argparse import ArgumentParser
 
 COMPONENT_FUSELAGE = 0
@@ -43,21 +44,25 @@ SECTION_COUNT_RANGE = (2, 8)
 AUXILIARY_WING_SECTION_COUNT_RANGE = (2, 4)
 # Default recurrent cell for autoencoder training; set to 'rnn' or 'gru'.
 AE_RNN_TYPE = 'rnn'
+AE_CHECKPOINT_EVERY = 10
+SECTION_AE_OVERFIT_AIRCRAFT_COUNT = 2
+SECTION_AE_WING_FINAL_EPOCH = 250
+SECTION_AE_FUSELAGE_FINAL_EPOCH = 200
 AE_TEACHER_FORCING_P_FINAL = 0.1
-AE_TEACHER_FORCING_RAMP_START_EPOCH = 80
-AE_TEACHER_FORCING_RAMP_END_EPOCH = 100
+AE_TEACHER_FORCING_RAMP_START_EPOCH = 60
+AE_TEACHER_FORCING_RAMP_END_EPOCH = 80
+AE_WEIGHT_DECAY = 1e-5
 WING_LOSS_WEIGHTS = {
-    'position': 2.0,
+    'position': 5.0,
     'chord': 1.0,
     'twist': 1.0,
     'cst_code': 1.0,
-    'decoded_curve': 0.0,
-    'section_count': 2.0,
+    'section_count': 3.0,
 }
 FUSELAGE_LOSS_WEIGHTS = {
     'position': 1.0,
     'size': 1.0,
-    'section_count': 1.0,
+    'section_count': 2.0,
 }
 AE_LOSS_WEIGHTS = {
     'geometry': 5.0,
@@ -107,6 +112,11 @@ def validate_ae_teacher_forcing_schedule(config):
         )
 
 
+def validate_ae_weight_decay(weight_decay):
+    if not math.isfinite(weight_decay) or weight_decay < 0.0:
+        raise ValueError('--ae_weight_decay must be finite and non-negative.')
+
+
 def ae_teacher_forcing_probability(epoch, config):
     if epoch < 1:
         raise ValueError(f'epoch must be at least 1, got {epoch}.')
@@ -124,28 +134,11 @@ def ae_teacher_forcing_probability(epoch, config):
 def get_args():
     parser = ArgumentParser(description='grass_pytorch')
     parser.add_argument('--box_code_size', type=int, default=13)
-    parser.add_argument('--feature_size', type=int, default=256)
-    parser.add_argument('--hidden_size', type=int, default=256)
+    parser.add_argument('--feature_size', type=int, default=128)
+    parser.add_argument('--hidden_size', type=int, default=128)
     parser.add_argument('--symmetry_size', type=int, default=8)
     parser.add_argument('--max_box_num', type=int, default=30)
     parser.add_argument('--max_sym_num', type=int, default=10)
-
-    # GAN Hyperparameters
-    parser.add_argument('--alpha1', type=float, default=0.05, help='Weight for VAE reconstruction loss in GAN training')
-    parser.add_argument('--alpha2', type=float, default=0.05, help='Weight for VAE KL divergence loss in GAN training')
-    parser.add_argument('--lambda_gp', type=float, default=10.0, help='Weight for gradient penalty in WGAN-GP')
-    parser.add_argument('--gan_lambda_geom', type=float, default=0.4, help='Weight for box geometry MSE loss')
-    parser.add_argument('--gan_lambda_cls', type=float, default=1.0, help='Weight for box category cross-entropy loss')
-    parser.add_argument('--gan_lambda_sym', type=float, default=0.5, help='Weight for symmetry parameter MSE loss')
-    parser.add_argument('--gan_lambda_cat', type=float, default=0.2, help='Weight for node type classification cross-entropy loss')
-    parser.add_argument('--gan_lr', type=float, default=1e-4, help='Learning rate for GAN optimizers')
-    parser.add_argument('--gan_beta1', type=float, default=0.0, help='Beta1 for GAN Adam optimizer')
-    parser.add_argument('--gan_beta2', type=float, default=0.9, help='Beta2 for GAN Adam optimizer')
-    parser.add_argument('--n_critic', type=int, default=1, help='Number of discriminator updates per generator update')
-    parser.add_argument('--gan_k_candidates', type=int, default=5, help='Number of structure candidates for each noise vector in G step')
-    parser.add_argument('--gan_epochs', type=int, default=100, help='Number of epochs for GAN training')
-    parser.add_argument('--gan_batch_size', type=int, default=10, help='Batch size for GAN training')
-    parser.add_argument('--gan_temperature', type=float, default=1.0, help='Temperature for categorical sampling of GAN candidate structures')
 
     # VAE parameters
     parser.add_argument('--epochs', type=int, default=60)
@@ -166,14 +159,19 @@ def get_args():
 
     # Deterministic autoencoder parameters.  The AE does not use the VAE
     # sampler, KL divergence, or sample decoder.
-    parser.add_argument('--ae_epochs', type=int, default=160)
+    parser.add_argument('--ae_epochs', type=int, default=250)
     parser.add_argument('--ae_batch_size', type=int, default=16)
     parser.add_argument('--ae_lr', type=float, default=8e-4)
-    parser.add_argument('--ae_lr_decay_factor', type=float, default=0.5)
+    parser.add_argument('--ae_weight_decay', type=float, default=AE_WEIGHT_DECAY)
+    parser.add_argument('--ae_lr_decay_factor', type=float, default=0.6)
     parser.add_argument('--ae_lr_decay_patience', type=int, default=8)
     parser.add_argument('--ae_lr_min', type=float, default=1e-6)
     parser.add_argument('--ae_validation_fraction', type=float, default=0.1)
     parser.add_argument('--ae_seed', type=int, default=0)
+    parser.add_argument(
+        '--overfit', action='store_true', default=False,
+        help='Train the section AE on one deterministic, two-aircraft diagnostic subset.',
+    )
     parser.add_argument('--ae_gradient_clip', type=float, default=1.0)
     parser.add_argument('--ae_log_every', type=int, default=1)
     parser.add_argument('--ae_checkpoint_dir', type=str, default='models/autoencoder')
@@ -202,7 +200,7 @@ def get_args():
     )
     parser.add_argument(
         '--ae_section_pretrained_checkpoint_dir', type=str, default='',
-        help='Optional directory containing best_wing.pt and best_fuselage.pt for joint-AE initialization.',
+        help='Optional directory containing final last_wing.pt and last_fuselage.pt for joint-AE initialization.',
     )
 
     parser.add_argument('--no_cuda', action='store_true', default=False)

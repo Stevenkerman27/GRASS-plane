@@ -13,7 +13,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import grassmodel
+import grassdata
 import section_autoencoder
+import section_parameter_codec
 import util
 from grassdata import StructuredGRASSDataset
 from grassmodel import GRASSDecoder, GRASSEncoder
@@ -75,7 +77,17 @@ def make_loaders(config):
         shuffle=False,
         collate_fn=collate_trees,
     )
-    return train_loader, validation_loader
+    section_statistics = {
+        sequence_type: section_parameter_codec.fit_section_parameter_statistics(
+            section_autoencoder.extract_section_leaves(training_set, sequence_type),
+            sequence_type,
+        )
+        for sequence_type in (
+            grassdata.SEQUENCE_TYPE_WING,
+            grassdata.SEQUENCE_TYPE_FUSELAGE,
+        )
+    }
+    return train_loader, validation_loader, section_statistics
 
 
 def aggregate_losses(apply_results, has_boxes, has_symmetry, has_node_types, batch_size, device):
@@ -233,6 +245,12 @@ def run_epoch(
 def save_checkpoint(
         path, epoch, encoder, decoder, optimizer, scheduler, validation_metrics,
         free_validation_metrics, config):
+    section_statistics = {
+        grassdata.SEQUENCE_TYPE_WING:
+            encoder.wing_section_encoder.parameter_codec.export_statistics(),
+        grassdata.SEQUENCE_TYPE_FUSELAGE:
+            encoder.fuselage_section_encoder.parameter_codec.export_statistics(),
+    }
     torch.save(
         {
             'epoch': epoch,
@@ -245,6 +263,7 @@ def save_checkpoint(
             'feature_size': config.feature_size,
             'hidden_size': config.hidden_size,
             'ae_rnn_type': config.ae_rnn_type,
+            'section_statistics': section_statistics,
             'teacher_forcing_schedule': {
                 'p_final': config.ae_teacher_forcing_p_final,
                 'ramp_start_epoch': config.ae_teacher_forcing_ramp_start_epoch,
@@ -274,6 +293,15 @@ def make_learning_rate_scheduler(optimizer, config):
         factor=config.ae_lr_decay_factor,
         patience=config.ae_lr_decay_patience,
         min_lr=config.ae_lr_min,
+    )
+
+
+def make_autoencoder_optimizer(parameters, config):
+    util.validate_ae_weight_decay(config.ae_weight_decay)
+    return torch.optim.AdamW(
+        parameters,
+        lr=config.ae_lr,
+        weight_decay=config.ae_weight_decay,
     )
 
 
@@ -351,13 +379,14 @@ def main():
     config = util.get_args()
     config.ae_rnn_type = util.validate_ae_rnn_type(config.ae_rnn_type)
     util.validate_ae_teacher_forcing_schedule(config)
+    util.validate_ae_weight_decay(config.ae_weight_decay)
     device = choose_device(config)
     cuda_enabled = device.type == 'cuda'
     set_seed(config.ae_seed, cuda_enabled)
-    train_loader, validation_loader = make_loaders(config)
+    train_loader, validation_loader, section_statistics = make_loaders(config)
 
-    encoder = GRASSEncoder(config).to(device)
-    decoder = GRASSDecoder(config).to(device)
+    encoder = GRASSEncoder(config, section_statistics).to(device)
+    decoder = GRASSDecoder(config, section_statistics).to(device)
     if config.ae_section_pretrained_checkpoint_dir:
         section_autoencoder.load_pretrained_section_autoencoders(
             encoder,
@@ -370,8 +399,8 @@ def main():
             'Loaded section-AE initialization from '
             f'{config.ae_section_pretrained_checkpoint_dir}; all section parameters remain trainable.'
         )
-    optimizer = torch.optim.Adam(
-        list(encoder.parameters()) + list(decoder.parameters()), lr=config.ae_lr
+    optimizer = make_autoencoder_optimizer(
+        list(encoder.parameters()) + list(decoder.parameters()), config
     )
     scheduler = make_learning_rate_scheduler(optimizer, config)
     checkpoint_dir = Path(config.ae_checkpoint_dir)
@@ -381,6 +410,7 @@ def main():
         f'Using {device}; train samples={len(train_loader.dataset)}; '
         f'validation samples={len(validation_loader.dataset)}; '
         f'recurrent_cell={config.ae_rnn_type}; '
+        f'weight_decay={config.ae_weight_decay}; '
         f'p_final={config.ae_teacher_forcing_p_final}; '
         f'ramp=[{config.ae_teacher_forcing_ramp_start_epoch}, '
         f'{config.ae_teacher_forcing_ramp_end_epoch}]'
@@ -440,16 +470,17 @@ def main():
                 f'p_teacher={teacher_forcing_probability:.6f} '
                 f'learning_rate={learning_rate:.8g}'
             )
-        save_checkpoint(
-            checkpoint_dir / f'last_{config.ae_rnn_type}.pt', epoch, encoder, decoder, optimizer, scheduler,
-            validation_metrics, free_validation_metrics, config
-        )
-        if validation_metrics['total'] < best_validation_total:
-            best_validation_total = validation_metrics['total']
+        if epoch % util.AE_CHECKPOINT_EVERY == 0 or epoch == config.ae_epochs:
             save_checkpoint(
-                checkpoint_dir / f'best_{config.ae_rnn_type}.pt', epoch, encoder, decoder, optimizer, scheduler,
+                checkpoint_dir / f'last_{config.ae_rnn_type}.pt', epoch, encoder, decoder, optimizer, scheduler,
                 validation_metrics, free_validation_metrics, config
             )
+            if validation_metrics['total'] < best_validation_total:
+                best_validation_total = validation_metrics['total']
+                save_checkpoint(
+                    checkpoint_dir / f'best_{config.ae_rnn_type}.pt', epoch, encoder, decoder, optimizer, scheduler,
+                    validation_metrics, free_validation_metrics, config
+                )
     save_loss_curves(
         history,
         learning_rate_history,

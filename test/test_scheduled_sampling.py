@@ -11,8 +11,28 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import grassdata
+import section_parameter_codec
 import util
 from grassmodel import AutoregressiveSectionDecoder
+
+
+def fuselage_statistics():
+    return {
+        'schema': section_parameter_codec.SECTION_PARAMETER_CODEC_SCHEMA,
+        'sequence_type': grassdata.SEQUENCE_TYPE_FUSELAGE,
+        'mean': torch.zeros(util.FUSELAGE_SECTION_SIZE),
+        'std': torch.ones(util.FUSELAGE_SECTION_SIZE),
+        'constant_mask': torch.zeros(util.FUSELAGE_SECTION_SIZE, dtype=torch.bool),
+    }
+
+
+def fuselage_sections(batch_size):
+    sections = torch.randn(
+        batch_size, util.SECTION_COUNT_RANGE[1], util.FUSELAGE_SECTION_SIZE
+    )
+    sections[..., 0] = torch.arange(util.SECTION_COUNT_RANGE[1], dtype=sections.dtype)
+    sections[..., 3:5] = torch.rand(batch_size, util.SECTION_COUNT_RANGE[1], 2) + 0.1
+    return sections
 
 
 def schedule_config(**overrides):
@@ -53,13 +73,17 @@ def test_teacher_forcing_schedule_rejects_invalid_configuration(config):
 def test_decoder_accepts_per_sample_scheduled_sampling_probabilities():
     torch.manual_seed(3)
     decoder = AutoregressiveSectionDecoder(
-        grassdata.SEQUENCE_TYPE_FUSELAGE, feature_size=7, rnn_type='rnn'
+        grassdata.SEQUENCE_TYPE_FUSELAGE,
+        feature_size=7,
+        rnn_type='rnn',
+        parameter_statistics=fuselage_statistics(),
     )
     features = torch.randn(2, 7)
-    sections = torch.randn(2, util.SECTION_COUNT_RANGE[1], util.FUSELAGE_SECTION_SIZE)
+    sections = fuselage_sections(2)
+    count = torch.full((2,), util.SECTION_COUNT_RANGE[1])
 
-    teacher_forced, _ = decoder(features, sections, torch.tensor([1.0, 1.0]))
-    free_running, _ = decoder(features, sections, torch.tensor([0.0, 0.0]))
+    teacher_forced, _ = decoder(features, sections, count, torch.tensor([1.0, 1.0]))
+    free_running, _ = decoder(features, sections, count, torch.tensor([0.0, 0.0]))
 
     assert teacher_forced.shape == sections.shape
     assert free_running.shape == sections.shape
@@ -70,19 +94,24 @@ def test_decoder_accepts_per_sample_scheduled_sampling_probabilities():
 def test_probability_one_preserves_teacher_forced_section_outputs():
     torch.manual_seed(4)
     decoder = AutoregressiveSectionDecoder(
-        grassdata.SEQUENCE_TYPE_FUSELAGE, feature_size=7, rnn_type='rnn'
+        grassdata.SEQUENCE_TYPE_FUSELAGE,
+        feature_size=7,
+        rnn_type='rnn',
+        parameter_statistics=fuselage_statistics(),
     )
     features = torch.randn(2, 7)
-    sections = torch.randn(2, util.SECTION_COUNT_RANGE[1], util.FUSELAGE_SECTION_SIZE)
+    sections = fuselage_sections(2)
+    count = torch.full((2,), util.SECTION_COUNT_RANGE[1])
+    teacher_model_sections = decoder.parameter_codec.normalize(sections, count)
 
     hidden = torch.tanh(decoder.initial_hidden(features))
     previous = decoder.bos.unsqueeze(0).expand(features.size(0), -1)
-    raw_sections = []
+    model_sections = []
     for index in range(util.SECTION_COUNT_RANGE[1]):
-        hidden = decoder.rnn(previous, hidden)
-        raw_sections.append(decoder.output(hidden))
-        previous = sections[:, index, :]
-    expected = decoder._constrain_sections(torch.stack(raw_sections, dim=1))
-    actual, _ = decoder(features, sections, torch.tensor([1.0, 1.0]))
+        hidden = decoder.rnn(decoder._step_input(previous, features, index), hidden)
+        model_sections.append(decoder._canonicalize_model_step(decoder.output(hidden), index))
+        previous = teacher_model_sections[:, index, :]
+    expected = decoder.parameter_codec.denormalize(torch.stack(model_sections, dim=1))
+    actual, _ = decoder(features, sections, count, torch.tensor([1.0, 1.0]))
 
     assert torch.allclose(actual, expected)

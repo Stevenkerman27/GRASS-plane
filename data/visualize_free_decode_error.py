@@ -91,6 +91,7 @@ def make_model(checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
     required_keys = (
         'encoder_state_dict', 'decoder_state_dict', 'feature_size', 'hidden_size', 'ae_rnn_type',
+        'section_statistics',
     )
     missing = [key for key in required_keys if key not in checkpoint]
     if missing:
@@ -102,8 +103,8 @@ def make_model(checkpoint_path, device):
         symmetry_size=8,
         ae_rnn_type=checkpoint['ae_rnn_type'],
     )
-    encoder = grassmodel.GRASSEncoder(config).to(device)
-    decoder = grassmodel.GRASSDecoder(config).to(device)
+    encoder = grassmodel.GRASSEncoder(config, checkpoint['section_statistics']).to(device)
+    decoder = grassmodel.GRASSDecoder(config, checkpoint['section_statistics']).to(device)
     encoder.load_state_dict(checkpoint['encoder_state_dict'], strict=True)
     decoder.load_state_dict(checkpoint['decoder_state_dict'], strict=True)
     encoder.eval()

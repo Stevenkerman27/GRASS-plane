@@ -1,6 +1,7 @@
 """Reusable leaf-section autoencoder components and checkpoint contract."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 from torch import nn
@@ -8,9 +9,16 @@ from torch.utils.data import Dataset
 
 import grassdata
 import grassmodel
+import section_parameter_codec
 
 
-SECTION_AUTOENCODER_CHECKPOINT_SCHEMA = 'grass_section_autoencoder_v1'
+SECTION_AUTOENCODER_CHECKPOINT_SCHEMA = 'grass_section_autoencoder_v2'
+
+
+def final_checkpoint_path(checkpoint_dir, sequence_type):
+    """Return the sole section-AE checkpoint selected after training completes."""
+    grassdata.sequence_spec(sequence_type)
+    return Path(checkpoint_dir) / f'last_{sequence_type}.pt'
 
 
 class SectionLeafDataset(Dataset):
@@ -57,35 +65,46 @@ def extract_section_leaves(trees, sequence_type):
 
 
 class SectionAutoencoder(nn.Module):
-    def __init__(self, sequence_type, config):
+    def __init__(self, sequence_type, config, parameter_statistics):
         super().__init__()
         grassdata.sequence_spec(sequence_type)
         self.sequence_type = sequence_type
         self.section_encoder = grassmodel.SectionEncoder(
-            sequence_type, config.feature_size, config.ae_rnn_type
+            sequence_type,
+            config.feature_size,
+            config.ae_rnn_type,
+            parameter_statistics,
         )
         self.section_decoder = grassmodel.AutoregressiveSectionDecoder(
-            sequence_type, config.feature_size, config.ae_rnn_type
+            sequence_type,
+            config.feature_size,
+            config.ae_rnn_type,
+            parameter_statistics,
         )
 
     def forward(self, sections, section_count, teacher_forcing_probability):
         feature = self.section_encoder(sections, section_count)
-        return self.section_decoder(feature, sections, teacher_forcing_probability)
+        return self.section_decoder(
+            feature, sections, section_count, teacher_forcing_probability
+        )
 
 
-def reconstruction_losses(sequence_type, sections, count_logits, target_sections, target_count):
+def reconstruction_losses(model, sections, count_logits, target_sections, target_count):
+    sequence_type = model.sequence_type
+    parameter_codec = model.section_decoder.parameter_codec
     if sequence_type == grassdata.SEQUENCE_TYPE_WING:
         return grassmodel.wing_section_reconstruction_losses(
-            sections, count_logits, target_sections, target_count
+            parameter_codec, sections, count_logits, target_sections, target_count
         )
     if sequence_type == grassdata.SEQUENCE_TYPE_FUSELAGE:
         return grassmodel.fuselage_section_reconstruction_losses(
-            sections, count_logits, target_sections, target_count
+            parameter_codec, sections, count_logits, target_sections, target_count
         )
     raise ValueError(f'Unsupported sequence type: {sequence_type}')
 
 
 def build_checkpoint(model, epoch, optimizer, scheduler, validation_metrics, config):
+    parameter_statistics = model.section_encoder.parameter_codec.export_statistics()
     return {
         'schema': SECTION_AUTOENCODER_CHECKPOINT_SCHEMA,
         'sequence_type': model.sequence_type,
@@ -99,6 +118,7 @@ def build_checkpoint(model, epoch, optimizer, scheduler, validation_metrics, con
         'feature_size': config.feature_size,
         'hidden_size': config.hidden_size,
         'ae_rnn_type': config.ae_rnn_type,
+        'parameter_statistics': parameter_statistics,
         'teacher_forcing_schedule': {
             'p_final': config.ae_teacher_forcing_p_final,
             'ramp_start_epoch': config.ae_teacher_forcing_ramp_start_epoch,
@@ -107,7 +127,22 @@ def build_checkpoint(model, epoch, optimizer, scheduler, validation_metrics, con
     }
 
 
-def _validate_checkpoint(checkpoint, source, sequence_type, config):
+def _statistics_match(first, second, sequence_type):
+    section_parameter_codec.validate_section_parameter_statistics(first, sequence_type)
+    section_parameter_codec.validate_section_parameter_statistics(second, sequence_type)
+    return (
+        torch.equal(torch.as_tensor(first['constant_mask']), torch.as_tensor(second['constant_mask']))
+        and torch.allclose(
+            torch.as_tensor(first['mean']), torch.as_tensor(second['mean']), atol=1e-7, rtol=0.0
+        )
+        and torch.allclose(
+            torch.as_tensor(first['std']), torch.as_tensor(second['std']), atol=1e-7, rtol=0.0
+        )
+    )
+
+
+def _validate_checkpoint(
+        checkpoint, source, sequence_type, config, expected_statistics=None):
     expected = {
         'schema': SECTION_AUTOENCODER_CHECKPOINT_SCHEMA,
         'sequence_type': sequence_type,
@@ -122,6 +157,16 @@ def _validate_checkpoint(checkpoint, source, sequence_type, config):
             raise ValueError(
                 f'{source} has {key}={actual_value!r}; expected {expected_value!r}.'
             )
+    if 'parameter_statistics' not in checkpoint:
+        raise KeyError(f'{source} is missing parameter_statistics.')
+    section_parameter_codec.validate_section_parameter_statistics(
+        checkpoint['parameter_statistics'], sequence_type
+    )
+    if expected_statistics is not None and not _statistics_match(
+            checkpoint['parameter_statistics'], expected_statistics, sequence_type):
+        raise ValueError(
+            f'{source} parameter statistics do not match the full-AE training split.'
+        )
 
 
 def apply_pretrained_section_autoencoders(full_encoder, full_decoder, checkpoints, config):
@@ -137,7 +182,21 @@ def apply_pretrained_section_autoencoders(full_encoder, full_decoder, checkpoint
     }
     for sequence_type, (encoder_target, decoder_target) in targets.items():
         checkpoint = checkpoints[sequence_type]
-        _validate_checkpoint(checkpoint, f'{sequence_type} section-AE checkpoint', sequence_type, config)
+        expected_statistics = encoder_target.parameter_codec.export_statistics()
+        if not _statistics_match(
+                expected_statistics,
+                decoder_target.parameter_codec.export_statistics(),
+                sequence_type):
+            raise ValueError(
+                f'Full-AE {sequence_type} encoder and decoder parameter statistics differ.'
+            )
+        _validate_checkpoint(
+            checkpoint,
+            f'{sequence_type} section-AE checkpoint',
+            sequence_type,
+            config,
+            expected_statistics,
+        )
         encoder_target.load_state_dict(checkpoint['section_encoder_state_dict'], strict=True)
         decoder_target.load_state_dict(checkpoint['section_decoder_state_dict'], strict=True)
 
@@ -149,8 +208,33 @@ def load_pretrained_section_autoencoders(full_encoder, full_decoder, checkpoint_
 
     checkpoints = {}
     for sequence_type in (grassdata.SEQUENCE_TYPE_WING, grassdata.SEQUENCE_TYPE_FUSELAGE):
-        path = directory / f'best_{sequence_type}.pt'
+        path = final_checkpoint_path(directory, sequence_type)
         if not path.is_file():
             raise FileNotFoundError(f'Missing required {sequence_type} section-AE checkpoint: {path}')
         checkpoints[sequence_type] = torch.load(path, map_location=device, weights_only=True)
     apply_pretrained_section_autoencoders(full_encoder, full_decoder, checkpoints, config)
+
+
+def load_section_autoencoder(checkpoint_path, sequence_type, device):
+    """Load one independently trained leaf-section autoencoder for evaluation."""
+    path = Path(checkpoint_path)
+    if not path.is_file():
+        raise FileNotFoundError(f'Section-AE checkpoint does not exist: {path}')
+    checkpoint = torch.load(path, map_location='cpu', weights_only=True)
+    required_keys = ('feature_size', 'hidden_size', 'ae_rnn_type', 'parameter_statistics')
+    missing = [key for key in required_keys if key not in checkpoint]
+    if missing:
+        raise KeyError(f'{path} is missing required checkpoint keys: {missing}')
+    config = SimpleNamespace(
+        feature_size=checkpoint['feature_size'],
+        hidden_size=checkpoint['hidden_size'],
+        ae_rnn_type=checkpoint['ae_rnn_type'],
+    )
+    _validate_checkpoint(checkpoint, str(path), sequence_type, config)
+    model = SectionAutoencoder(
+        sequence_type, config, checkpoint['parameter_statistics']
+    ).to(device)
+    model.section_encoder.load_state_dict(checkpoint['section_encoder_state_dict'], strict=True)
+    model.section_decoder.load_state_dict(checkpoint['section_decoder_state_dict'], strict=True)
+    model.eval()
+    return model, checkpoint
