@@ -37,6 +37,11 @@ TARGET_MATCHED_COLOR = '0.72'
 TARGET_UNMATCHED_COLOR = '0.45'
 TOTAL_SAMPLES = 4
 NON_GUI_BACKENDS = {'agg', 'pdf', 'ps', 'svg', 'template'}
+WING_LEADING_EDGE_SLICE = slice(
+    util.CST_AIRFOIL_CODE_SIZE, util.CST_AIRFOIL_CODE_SIZE + 3
+)
+WING_CHORD_INDEX = util.CST_AIRFOIL_CODE_SIZE + 3
+WING_TWIST_INDEX = util.CST_AIRFOIL_CODE_SIZE + 4
 
 
 @dataclass(frozen=True)
@@ -249,7 +254,7 @@ def wing_section_points(component, section):
     twist_axis = np.array([0.0, 1.0, 0.0], dtype=float)
     chord_axis = np.array([1.0, 0.0, 0.0], dtype=float)
     thickness_axis = np.array([0.0, 0.0, 1.0], dtype=float)
-    twist = float(section[28])
+    twist = float(section[WING_TWIST_INDEX])
     chord_axis = rotate_about_axis(chord_axis, twist_axis, twist)
     thickness_axis = rotate_about_axis(thickness_axis, twist_axis, twist)
     curve = cst_airfoil_codec.decode_cst_airfoil_code(
@@ -257,9 +262,9 @@ def wing_section_points(component, section):
         num_output_points=util.FREE_DECODE_ERROR_AIRFOIL_POINTS,
     ).squeeze(0).detach().cpu().numpy()
     local_points = (
-        section[24:27]
-        + curve[:, :1] * float(section[27]) * chord_axis
-        + curve[:, 1:2] * float(section[27]) * thickness_axis
+        section[WING_LEADING_EDGE_SLICE]
+        + curve[:, :1] * float(section[WING_CHORD_INDEX]) * chord_axis
+        + curve[:, 1:2] * float(section[WING_CHORD_INDEX]) * thickness_axis
     )
     return apply_transform(local_points, component)
 
@@ -364,7 +369,14 @@ def normalized_station_positions(component):
     if component.component == util.COMPONENT_FUSELAGE:
         coordinate = sections[:, 0]
     elif component.component == util.COMPONENT_WING:
-        coordinate = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(sections[:, 24:27], axis=0), axis=1))]
+        coordinate = np.r_[
+            0.0,
+            np.cumsum(
+                np.linalg.norm(
+                    np.diff(sections[:, WING_LEADING_EDGE_SLICE], axis=0), axis=1
+                )
+            ),
+        ]
     else:
         raise ValueError(f'Unsupported component: {component.component}')
     span = float(coordinate[-1] - coordinate[0])

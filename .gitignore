@@ -3,7 +3,7 @@ shared_pkg_staging/
 outputs/
 data/airfoil_code_cache.pt
 data/cst_airfoil_code_cache.pt
-data/airfoil_fit_visualizations/
+data/airfoil_fit_visualizations*/
 data/cst_precompute*.log
 data/flying_wing_dataset
 data/conventional_canard_dataset
@@ -12,4 +12,5 @@ Grass-matlab/
 foildata/coord_seligFmt
 foildata/coord_seligFmt.zip
 foildata/processed_foil
-
+.agents/
+.codex/

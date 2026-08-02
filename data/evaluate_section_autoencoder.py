@@ -34,7 +34,7 @@ def parse_args():
         description='Evaluate independent section-AE reconstruction errors on its validation split.'
     )
     parser.add_argument(
-        '--mode', choices=('teacher_forced', 'free_running', 'both'), default='both'
+        '--mode', choices=('deterministic',), default='deterministic'
     )
     parser.add_argument(
         '--sequence_type', choices=('wing', 'fuselage', 'both'), default='both'
@@ -66,12 +66,6 @@ def evaluation_sequence_types(value):
     return (value,)
 
 
-def evaluation_modes(value):
-    if value == 'both':
-        return ('teacher_forced', 'free_running')
-    return (value,)
-
-
 def assert_statistics_match(checkpoint_statistics, expected_statistics, sequence_type):
     section_parameter_codec.validate_section_parameter_statistics(
         checkpoint_statistics, sequence_type
@@ -79,19 +73,20 @@ def assert_statistics_match(checkpoint_statistics, expected_statistics, sequence
     section_parameter_codec.validate_section_parameter_statistics(
         expected_statistics, sequence_type
     )
-    fields_match = (
+    fields_match = all(
         torch.equal(
-            torch.as_tensor(checkpoint_statistics['constant_mask']),
-            torch.as_tensor(expected_statistics['constant_mask']),
+            torch.as_tensor(checkpoint_statistics[f'{prefix}_constant_mask']),
+            torch.as_tensor(expected_statistics[f'{prefix}_constant_mask']),
         )
         and torch.allclose(
-            torch.as_tensor(checkpoint_statistics['mean']),
-            torch.as_tensor(expected_statistics['mean']), atol=1e-7, rtol=0.0,
+            torch.as_tensor(checkpoint_statistics[f'{prefix}_mean']),
+            torch.as_tensor(expected_statistics[f'{prefix}_mean']), atol=1e-7, rtol=0.0,
         )
         and torch.allclose(
-            torch.as_tensor(checkpoint_statistics['std']),
-            torch.as_tensor(expected_statistics['std']), atol=1e-7, rtol=0.0,
+            torch.as_tensor(checkpoint_statistics[f'{prefix}_std']),
+            torch.as_tensor(expected_statistics[f'{prefix}_std']), atol=1e-7, rtol=0.0,
         )
+        for prefix in ('global', 'section')
     )
     if not fields_match:
         raise ValueError(
@@ -128,22 +123,18 @@ def write_result(result, summary_path, samples_path):
 
 def print_result(result, source_name, checkpoint):
     loss = result['normalized_training_loss']['total']['mean']
-    count = result['section_count']
-    geometry_result = result['geometry_error']
-    geometry_m = geometry_result['section_mean_rms_m']['mean']
-    geometry_normalized = geometry_result['section_mean_rms_normalized']['mean']
+    parameter_error = result['physical_parameter_error']
     print(
         f'{result["mode"]} {result["sequence_type"]}: checkpoint_epoch={checkpoint["epoch"]}; '
         f'{source_name}_leaves={result["leaf_count"]}; normalized_total={loss:.6g}; '
-        f'count_accuracy={count["accuracy"]:.2%}; count_mae={count["mean_absolute_error"]:.4g}; '
-        f'geometry_rms={geometry_m:.6g}m ({geometry_normalized:.2%})',
+        f'global_mae={parameter_error["global_mae"]["mean"]:.6g}; '
+        f'section_mae={parameter_error["section_mae"]["mean"]:.6g}',
         flush=True,
     )
 
 
 def main():
     evaluation_args, config = parse_args()
-    config.ae_rnn_type = util.validate_ae_rnn_type(config.ae_rnn_type)
     device = choose_device(config)
     training_aircraft, validation_aircraft = make_aircraft_splits(config)
     evaluation_aircraft = training_aircraft if config.overfit else validation_aircraft
@@ -152,7 +143,7 @@ def main():
     evaluation_dir = checkpoint_dir / 'evaluation'
 
     sequence_types = evaluation_sequence_types(evaluation_args.sequence_type)
-    modes = evaluation_modes(evaluation_args.mode)
+    modes = (evaluation_args.mode,)
     output_path_pairs = [
         output_paths(evaluation_dir, mode, sequence_type)
         for sequence_type in sequence_types

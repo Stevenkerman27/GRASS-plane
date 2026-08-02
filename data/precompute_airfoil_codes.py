@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import cst_airfoil_codec
+import util
 if __package__:
     from data import cst_airfoil_code_cache
 else:
@@ -27,20 +28,34 @@ DEFAULT_AIRFOIL_DIR = REPO_ROOT / "foildata" / "processed_foil"
 DEFAULT_WORKERS = 16
 DEFAULT_THREADS_PER_WORKER = 1
 DEFAULT_TOP_ERROR_COUNT = 10
-DEFAULT_VISUALIZATION_DIR = DATA_DIR / 'airfoil_fit_visualizations'
-DEFAULT_REPORT_PATH = DATA_DIR / 'cst_fit_report.json'
 FIT_REPORT_SCHEMA = 'cst_fit_report_v1'
+
+
+def artifact_suffix(shape_coefficient_count):
+    if shape_coefficient_count == util.CST_SURFACE_SHAPE_COEFFICIENTS:
+        return ''
+    return f'_c{shape_coefficient_count}'
+
+
+def default_artifact_paths(shape_coefficient_count):
+    suffix = artifact_suffix(shape_coefficient_count)
+    return {
+        'cache': DATA_DIR / f'cst_airfoil_code_cache{suffix}.pt',
+        'visualization_dir': DATA_DIR / f'airfoil_fit_visualizations{suffix}',
+        'report': DATA_DIR / f'cst_fit_report{suffix}.json',
+    }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Precompute CPU CST codes for all processed airfoils.")
     parser.add_argument("--airfoil-dir", type=Path, default=DEFAULT_AIRFOIL_DIR)
-    parser.add_argument("--cache", type=Path, default=DATA_DIR / "cst_airfoil_code_cache.pt")
+    parser.add_argument("--cache", type=Path)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--threads-per-worker", type=int, default=DEFAULT_THREADS_PER_WORKER)
     parser.add_argument("--top-error-count", type=int, default=DEFAULT_TOP_ERROR_COUNT)
-    parser.add_argument("--visualization-dir", type=Path, default=DEFAULT_VISUALIZATION_DIR)
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_PATH)
+    parser.add_argument("--visualization-dir", type=Path)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--shape-coefficients", type=int)
     return parser.parse_args()
 
 
@@ -53,7 +68,9 @@ def load_airfoil_paths(airfoil_dir):
     return paths
 
 
-def fit_missing_airfoils(cache, missing_paths, workers, threads_per_worker, cache_path):
+def fit_missing_airfoils(
+        cache, missing_paths, workers, threads_per_worker, cache_path,
+        shape_coefficient_count):
     if workers <= 0:
         raise ValueError(f"workers must be positive, got {workers}")
     if threads_per_worker <= 0:
@@ -62,7 +79,12 @@ def fit_missing_airfoils(cache, missing_paths, workers, threads_per_worker, cach
         return
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(cst_airfoil_code_cache.fit_airfoil_code_cpu, path, threads_per_worker): path
+            executor.submit(
+                cst_airfoil_code_cache.fit_airfoil_code_cpu,
+                path,
+                threads_per_worker,
+                shape_coefficient_count,
+            ): path
             for path in missing_paths
         }
         completed_count = 0
@@ -83,10 +105,12 @@ def fit_missing_airfoils(cache, missing_paths, workers, threads_per_worker, cach
             raise
 
 
-def cached_entries_for_paths(cache, paths):
+def cached_entries_for_paths(cache, paths, shape_coefficient_count):
     entries = []
     for path in paths:
-        entry = cst_airfoil_code_cache.lookup_entry(cache, path)
+        entry = cst_airfoil_code_cache.lookup_entry(
+            cache, path, shape_coefficient_count
+        )
         if entry is None:
             raise RuntimeError(f'No cached CST entry for {path}')
         entries.append((path, entry))
@@ -114,7 +138,7 @@ def print_top_errors(entries):
         )
 
 
-def save_fit_visualizations(entries, visualization_dir):
+def save_fit_visualizations(entries, visualization_dir, shape_coefficient_count):
     import matplotlib
 
     matplotlib.use('Agg')
@@ -125,7 +149,8 @@ def save_fit_visualizations(entries, visualization_dir):
     for rank, (path, entry) in enumerate(entries, start=1):
         target_points = cst_airfoil_codec.load_dat(path)
         decoded_points = cst_airfoil_codec.decode_cst_airfoil_code(
-            torch.tensor(entry['code'], dtype=torch.float32)
+            torch.tensor(entry['code'], dtype=torch.float32),
+            shape_coefficient_count=shape_coefficient_count,
         ).squeeze(0)
         target = target_points.numpy()
         decoded = decoded_points.numpy()
@@ -162,9 +187,10 @@ def metric_summary(entries):
     }
 
 
-def build_fit_report(entries, error_entries):
+def build_fit_report(entries, error_entries, shape_coefficient_count):
     return {
         'schema': FIT_REPORT_SCHEMA,
+        'shape_coefficient_count': shape_coefficient_count,
         'sample_count': len(entries),
         'metric_summary': metric_summary(entries),
         'largest_max_point_errors': [
@@ -197,19 +223,41 @@ def save_fit_report(report, report_path):
 
 def main():
     args = parse_args()
+    shape_coefficient_count = cst_airfoil_codec.resolve_shape_coefficient_count(
+        args.shape_coefficients
+    )
+    artifact_paths = default_artifact_paths(shape_coefficient_count)
+    cache_path = artifact_paths['cache'] if args.cache is None else args.cache
+    visualization_dir = (
+        artifact_paths['visualization_dir']
+        if args.visualization_dir is None else args.visualization_dir
+    )
+    report_path = artifact_paths['report'] if args.report is None else args.report
     paths = load_airfoil_paths(args.airfoil_dir)
-    cache = cst_airfoil_code_cache.load_cache(args.cache)
-    missing_paths = cst_airfoil_code_cache.missing_airfoil_paths(cache, paths)
+    cache = cst_airfoil_code_cache.load_cache(cache_path)
+    missing_paths = cst_airfoil_code_cache.missing_airfoil_paths(
+        cache, paths, shape_coefficient_count
+    )
     print("Python executable:", sys.executable, flush=True)
+    print(
+        f"CST shape coefficients per surface: {shape_coefficient_count}; "
+        f"code size: {cst_airfoil_codec.cst_airfoil_code_size(shape_coefficient_count)}",
+        flush=True,
+    )
     print(f"Airfoil files: {len(paths)}; cached: {len(paths) - len(missing_paths)}; missing: {len(missing_paths)}", flush=True)
-    fit_missing_airfoils(cache, missing_paths, args.workers, args.threads_per_worker, args.cache)
-    entries = cached_entries_for_paths(cache, paths)
+    fit_missing_airfoils(
+        cache, missing_paths, args.workers, args.threads_per_worker, cache_path,
+        shape_coefficient_count
+    )
+    entries = cached_entries_for_paths(cache, paths, shape_coefficient_count)
     errors = top_error_entries(entries, args.top_error_count)
     print_top_errors(errors)
-    save_fit_visualizations(errors, args.visualization_dir)
-    save_fit_report(build_fit_report(entries, errors), args.report)
-    print(f"CST fit report: {args.report}", flush=True)
-    print(f"Airfoil cache ready: {args.cache}", flush=True)
+    save_fit_visualizations(errors, visualization_dir, shape_coefficient_count)
+    save_fit_report(
+        build_fit_report(entries, errors, shape_coefficient_count), report_path
+    )
+    print(f"CST fit report: {report_path}", flush=True)
+    print(f"Airfoil cache ready: {cache_path}", flush=True)
 
 
 if __name__ == "__main__":

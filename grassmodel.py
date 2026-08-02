@@ -8,8 +8,6 @@ import grassdata
 import section_parameter_codec
 from grassdata import Tree
 
-SEQUENCE_RNN_LAYERS = 1
-
 #########################################################################################
 ## Encoder
 #########################################################################################
@@ -46,38 +44,31 @@ class BoxEncoder(nn.Module):
 
 
 class SectionEncoder(nn.Module):
-    def __init__(self, sequence_type, feature_size, rnn_type, parameter_statistics):
+    def __init__(self, sequence_type, feature_size, parameter_statistics):
         super(SectionEncoder, self).__init__()
         self.sequence_type = sequence_type
         self.section_size = grassdata.sequence_section_size(sequence_type)
-        self.max_sections = grassdata.sequence_max_sections(sequence_type)
-        self.rnn_type = util.validate_ae_rnn_type(rnn_type)
+        self.section_count = grassdata.sequence_max_sections(sequence_type)
+        self.global_size = grassdata.sequence_global_size(sequence_type)
         self.parameter_codec = section_parameter_codec.SectionParameterCodec(
             sequence_type, parameter_statistics
         )
-        recurrent_class = nn.RNN if self.rnn_type == 'rnn' else nn.GRU
-        recurrent_kwargs = {
-            'input_size': self.section_size,
-            'hidden_size': feature_size,
-            'batch_first': True,
-            'num_layers': SEQUENCE_RNN_LAYERS,
-        }
-        if self.rnn_type == 'rnn':
-            recurrent_kwargs['nonlinearity'] = 'tanh'
-        self.rnn = recurrent_class(**recurrent_kwargs)
+        channels = util.SECTION_CODEC_CONV_CHANNELS
+        self.conv1 = nn.Conv1d(self.section_size, channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, padding=1)
+        self.hidden = nn.Linear(channels * self.section_count + self.global_size, util.SECTION_CODEC_HIDDEN_SIZE)
+        self.output = nn.Linear(util.SECTION_CODEC_HIDDEN_SIZE, feature_size)
+        self.gelu = nn.GELU()
+        self.tanh = nn.Tanh()
 
-    def forward(self, sections, section_count):
-        expected_shape = (self.max_sections, self.section_size)
+    def forward(self, global_parameters, sections):
+        expected_shape = (self.section_count, self.section_size)
         if tuple(sections.shape[1:]) != expected_shape:
             raise ValueError(f'sections must have shape [B, {expected_shape[0]}, {expected_shape[1]}]')
-        counts = section_count.reshape(-1).to(dtype=torch.long, device=sections.device)
-        grassdata.section_mask(counts, sequence_type=self.sequence_type)
-        model_sections = self.parameter_codec.normalize(sections, counts)
-        packed = nn.utils.rnn.pack_padded_sequence(
-            model_sections, counts.detach().cpu(), batch_first=True, enforce_sorted=False
-        )
-        _, hidden = self.rnn(packed)
-        return hidden.squeeze(0)
+        global_model, section_model = self.parameter_codec.normalize(global_parameters, sections)
+        section_features = self.gelu(self.conv1(section_model.transpose(1, 2)))
+        section_features = self.gelu(self.conv2(section_features)).flatten(1)
+        return self.tanh(self.output(self.gelu(self.hidden(torch.cat([section_features, global_model], dim=1)))))
 
 class AdjEncoder(nn.Module):
 
@@ -122,13 +113,11 @@ class GRASSEncoder(nn.Module):
         self.fuselage_section_encoder = SectionEncoder(
             grassdata.SEQUENCE_TYPE_FUSELAGE,
             config.feature_size,
-            config.ae_rnn_type,
             section_statistics[grassdata.SEQUENCE_TYPE_FUSELAGE],
         )
         self.wing_section_encoder = SectionEncoder(
             grassdata.SEQUENCE_TYPE_WING,
             config.feature_size,
-            config.ae_rnn_type,
             section_statistics[grassdata.SEQUENCE_TYPE_WING],
         )
         self.adj_encoder = AdjEncoder(feature_size = config.feature_size, hidden_size = config.hidden_size)
@@ -141,11 +130,11 @@ class GRASSEncoder(nn.Module):
     def obbBoxEncoder(self, geometry):
         return self.engine_obb_encoder(geometry)
 
-    def fuselageSectionEncoder(self, sections, section_count):
-        return self.fuselage_section_encoder(sections, section_count)
+    def fuselageSectionEncoder(self, global_parameters, sections):
+        return self.fuselage_section_encoder(global_parameters, sections)
 
-    def wingSectionEncoder(self, sections, section_count):
-        return self.wing_section_encoder(sections, section_count)
+    def wingSectionEncoder(self, global_parameters, sections):
+        return self.wing_section_encoder(global_parameters, sections)
 
     def adjEncoder(self, left, right):
         return self.adj_encoder(left, right)
@@ -169,14 +158,14 @@ def encode_structure_fold(fold, tree, use_sampler=True):
                 if sequence_type == grassdata.SEQUENCE_TYPE_WING:
                     return fold.add(
                         'wingSectionEncoder',
+                        node.box['z_global'],
                         node.box["sections"],
-                        node.box["section_count"],
                     )
                 if sequence_type == grassdata.SEQUENCE_TYPE_FUSELAGE:
                     return fold.add(
                         'fuselageSectionEncoder',
+                        node.box['z_global'],
                         node.box["sections"],
-                        node.box["section_count"],
                     )
                 if node.box['component'] == util.COMPONENT_ENGINE:
                     return fold.add('obbBoxEncoder', node.box["geometry"])
@@ -307,6 +296,27 @@ class TypedBoxDecoder(nn.Module):
         return torch.cat([vector_tanh, vector_raw], dim=1)
 
 
+class SectionDecoder(nn.Module):
+    """Two-layer fixed-section MLP decoder."""
+
+    def __init__(self, sequence_type, feature_size, parameter_statistics):
+        super().__init__()
+        self.sequence_type = sequence_type
+        self.parameter_codec = section_parameter_codec.SectionParameterCodec(
+            sequence_type, parameter_statistics
+        )
+        self.hidden = nn.Linear(feature_size, util.SECTION_CODEC_HIDDEN_SIZE)
+        self.output = nn.Linear(
+            util.SECTION_CODEC_HIDDEN_SIZE, self.parameter_codec.decoder_output_size
+        )
+        self.gelu = nn.GELU()
+
+    def forward(self, parent_feature):
+        if parent_feature.dim() != 2:
+            raise ValueError('parent_feature must have shape [B, feature_size].')
+        return self.parameter_codec.decode_vector(self.output(self.gelu(self.hidden(parent_feature))))
+
+
 class AutoregressiveSectionDecoder(nn.Module):
     def __init__(self, sequence_type, feature_size, rnn_type, parameter_statistics):
         super(AutoregressiveSectionDecoder, self).__init__()
@@ -322,6 +332,12 @@ class AutoregressiveSectionDecoder(nn.Module):
         )
         self.bos = nn.Parameter(torch.zeros(self.section_size))
         self.initial_hidden = nn.Linear(feature_size, feature_size)
+        self.count = nn.Linear(
+            feature_size, self.max_sections - self.minimum_sections + 1
+        )
+        self.count_embedding = nn.Embedding(
+            self.max_sections - self.minimum_sections + 1, feature_size
+        )
         recurrent_cell_class = (
             nn.RNNCell if self.rnn_type == 'rnn' else nn.GRUCell
         )
@@ -329,14 +345,11 @@ class AutoregressiveSectionDecoder(nn.Module):
         if self.rnn_type == 'rnn':
             recurrent_cell_kwargs['nonlinearity'] = 'tanh'
         self.rnn = recurrent_cell_class(
-            self.section_size + feature_size + 1,
+            self.section_size + 2 * feature_size + 1,
             feature_size,
             **recurrent_cell_kwargs,
         )
         self.output = nn.Linear(feature_size, self.section_size)
-        self.count = nn.Linear(
-            feature_size, self.max_sections - self.minimum_sections + 1
-        )
 
     def _canonicalize_model_step(self, model_section, index):
         if self.component == util.COMPONENT_FUSELAGE and index == 0:
@@ -344,11 +357,24 @@ class AutoregressiveSectionDecoder(nn.Module):
             model_section[:, 0] = 0.0
         return model_section
 
-    def _step_input(self, previous, parent_feature, index):
-        normalized_step = parent_feature.new_full(
-            (parent_feature.size(0), 1), index / (self.max_sections - 1)
+    def _count_condition(self, parent_feature):
+        count_logits = self.count(parent_feature)
+        probabilities = torch.softmax(count_logits, dim=1)
+        count_values = torch.arange(
+            self.minimum_sections, self.max_sections + 1,
+            dtype=parent_feature.dtype, device=parent_feature.device,
         )
-        return torch.cat([previous, parent_feature, normalized_step], dim=1)
+        expected_count = probabilities @ count_values
+        embedding = probabilities @ self.count_embedding.weight
+        return count_logits, expected_count, embedding
+
+    def _step_input(self, previous, parent_feature, count_embedding, expected_count, index):
+        normalized_step = parent_feature.new_full(
+            (parent_feature.size(0), 1), index
+        ) / (expected_count.unsqueeze(1) - 1.0)
+        return torch.cat(
+            [previous, parent_feature, count_embedding, normalized_step], dim=1
+        )
 
     def forward(
             self, parent_feature, teacher_sections, teacher_count,
@@ -370,11 +396,17 @@ class AutoregressiveSectionDecoder(nn.Module):
         teacher_model_sections = self.parameter_codec.normalize(
             teacher_sections, teacher_count
         )
+        count_logits, expected_count, count_embedding = self._count_condition(parent_feature)
         hidden = torch.tanh(self.initial_hidden(parent_feature))
         previous = self.bos.unsqueeze(0).expand(parent_feature.size(0), -1)
         model_sections = []
         for index in range(self.max_sections):
-            hidden = self.rnn(self._step_input(previous, parent_feature, index), hidden)
+            hidden = self.rnn(
+                self._step_input(
+                    previous, parent_feature, count_embedding, expected_count, index
+                ),
+                hidden,
+            )
             model_section = self._canonicalize_model_step(self.output(hidden), index)
             model_sections.append(model_section)
             if torch.all(probability == 1.0):
@@ -391,7 +423,7 @@ class AutoregressiveSectionDecoder(nn.Module):
         physical_sections = self.parameter_codec.denormalize(
             torch.stack(model_sections, dim=1)
         )
-        return physical_sections, self.count(parent_feature)
+        return physical_sections, count_logits
 
     def generate(self, parent_feature):
         """Generate padded sections without ground-truth feedback.
@@ -401,18 +433,23 @@ class AutoregressiveSectionDecoder(nn.Module):
         """
         if parent_feature.dim() != 2:
             raise ValueError('parent_feature must have shape [B, feature_size]')
+        count_logits, expected_count, count_embedding = self._count_condition(parent_feature)
         hidden = torch.tanh(self.initial_hidden(parent_feature))
         previous = self.bos.unsqueeze(0).expand(parent_feature.size(0), -1)
         model_sections = []
         for index in range(self.max_sections):
-            hidden = self.rnn(self._step_input(previous, parent_feature, index), hidden)
+            hidden = self.rnn(
+                self._step_input(
+                    previous, parent_feature, count_embedding, expected_count, index
+                ),
+                hidden,
+            )
             model_section = self._canonicalize_model_step(self.output(hidden), index)
             model_sections.append(model_section)
             previous = model_section
         generated_sections = self.parameter_codec.denormalize(
             torch.stack(model_sections, dim=1)
         )
-        count_logits = self.count(parent_feature)
         section_count = torch.argmax(count_logits, dim=1) + self.minimum_sections
         valid_mask = grassdata.section_mask(
             section_count, device=parent_feature.device, sequence_type=self.sequence_type
@@ -426,7 +463,9 @@ def wing_section_reconstruction_losses(
         raise ValueError(
             f'Wing loss received {parameter_codec.sequence_type!r} parameter codec.'
         )
-    sections = parameter_codec.normalize(sections, gt_count)
+    sections = parameter_codec.normalize(
+        sections, gt_count, validate_wing_chord=False
+    )
     gt_sections = parameter_codec.normalize(gt_sections, gt_count)
     mask = grassdata.section_mask(
         gt_count, device=sections.device, sequence_type=sequence_type
@@ -438,13 +477,11 @@ def wing_section_reconstruction_losses(
         per_section = squared.mean(dim=2)
         return (per_section * mask).sum(dim=1) / denominator
 
-    cst_end = util.CST_AIRFOIL_CODE_SIZE
-    position_end = cst_end + 3
-    chord_end = position_end + 1
-    cst_l = masked_field_mse(0, cst_end)
-    position_l = masked_field_mse(cst_end, position_end)
-    chord_l = masked_field_mse(position_end, chord_end)
-    twist_l = masked_field_mse(chord_end, chord_end + 1)
+    geometry_end = util.WING_SECTION_GEOMETRY_SIZE
+    cst_l = masked_field_mse(geometry_end, util.WING_SECTION_SIZE)
+    position_l = masked_field_mse(0, 1)
+    chord_l = masked_field_mse(1, 2)
+    twist_l = masked_field_mse(2, geometry_end)
 
     count_target = gt_count.reshape(-1) - grassdata.sequence_section_count_range(sequence_type)[0]
     count_l = F.cross_entropy(count_logits, count_target, reduction='none')
@@ -478,10 +515,10 @@ def fuselage_section_reconstruction_losses(
     ).to(dtype=sections.dtype)
     denominator = mask.sum(dim=1).clamp_min(1.0)
     position_l = (
-        ((sections[..., :3] - gt_sections[..., :3]) ** 2).mean(dim=2) * mask
+        ((sections[..., :1] - gt_sections[..., :1]) ** 2).mean(dim=2) * mask
     ).sum(dim=1) / denominator
     size_l = (
-        ((sections[..., 3:5] - gt_sections[..., 3:5]) ** 2).mean(dim=2) * mask
+        ((sections[..., 1:] - gt_sections[..., 1:]) ** 2).mean(dim=2) * mask
     ).sum(dim=1) / denominator
     count_target = gt_count.reshape(-1) - grassdata.sequence_section_count_range(
         grassdata.SEQUENCE_TYPE_FUSELAGE
@@ -500,6 +537,45 @@ def fuselage_section_reconstruction_losses(
     }
 
 
+def _fixed_masked_mse(predicted, target, mask):
+    difference = (predicted - target).reshape(predicted.size(0), -1)
+    return difference[:, mask.reshape(-1)].square().mean(dim=1)
+
+
+def fixed_wing_section_reconstruction_losses(
+        parameter_codec, global_parameters, sections, gt_global_parameters, gt_sections):
+    predicted_global, predicted_sections = parameter_codec.normalize(global_parameters, sections)
+    target_global, target_sections = parameter_codec.normalize(gt_global_parameters, gt_sections)
+    geometry_mask = parameter_codec.learned_section_mask.clone()
+    geometry_mask[:, util.WING_SECTION_GEOMETRY_SIZE:] = False
+    cst_mask = parameter_codec.learned_section_mask.clone()
+    cst_mask[:, :util.WING_SECTION_GEOMETRY_SIZE] = False
+    global_l = (predicted_global - target_global).square().mean(dim=1)
+    geometry_l = _fixed_masked_mse(predicted_sections, target_sections, geometry_mask)
+    cst_l = _fixed_masked_mse(predicted_sections, target_sections, cst_mask)
+    total_l = (
+        util.WING_LOSS_WEIGHTS['global'] * global_l
+        + util.WING_LOSS_WEIGHTS['section_geometry'] * geometry_l
+        + util.WING_LOSS_WEIGHTS['cst_code'] * cst_l
+    )
+    return {'global': global_l, 'section_geometry': geometry_l, 'cst_code': cst_l, 'total': total_l}
+
+
+def fixed_fuselage_section_reconstruction_losses(
+        parameter_codec, global_parameters, sections, gt_global_parameters, gt_sections):
+    predicted_global, predicted_sections = parameter_codec.normalize(global_parameters, sections)
+    target_global, target_sections = parameter_codec.normalize(gt_global_parameters, gt_sections)
+    global_l = (predicted_global - target_global).square().mean(dim=1)
+    section_l = _fixed_masked_mse(
+        predicted_sections, target_sections, parameter_codec.learned_section_mask
+    )
+    total_l = (
+        util.FUSELAGE_LOSS_WEIGHTS['global'] * global_l
+        + util.FUSELAGE_LOSS_WEIGHTS['section_shape'] * section_l
+    )
+    return {'global': global_l, 'section_shape': section_l, 'total': total_l}
+
+
 class GRASSDecoder(nn.Module):
     def __init__(self, config, section_statistics):
         super(GRASSDecoder, self).__init__()
@@ -509,16 +585,14 @@ class GRASSDecoder(nn.Module):
             output_size = util.OBB_GEOMETRY_SIZE,
             tanh_size = util.OBB_GEOMETRY_SIZE,
         )
-        self.fuselage_section_decoder = AutoregressiveSectionDecoder(
+        self.fuselage_section_decoder = SectionDecoder(
             grassdata.SEQUENCE_TYPE_FUSELAGE,
             config.feature_size,
-            config.ae_rnn_type,
             section_statistics[grassdata.SEQUENCE_TYPE_FUSELAGE],
         )
-        self.wing_section_decoder = AutoregressiveSectionDecoder(
+        self.wing_section_decoder = SectionDecoder(
             grassdata.SEQUENCE_TYPE_WING,
             config.feature_size,
-            config.ae_rnn_type,
             section_statistics[grassdata.SEQUENCE_TYPE_WING],
         )
         self.adj_decoder = AdjDecoder(feature_size = config.feature_size, hidden_size = config.hidden_size)
@@ -535,23 +609,17 @@ class GRASSDecoder(nn.Module):
     def obbBoxDecoder(self, feature):
         return self.obb_box_decoder(feature)
 
-    def fuselageSectionDecoder(
-            self, feature, teacher_sections, teacher_count, teacher_forcing_probability):
-        return self.fuselage_section_decoder(
-            feature, teacher_sections, teacher_count, teacher_forcing_probability
-        )
+    def fuselageSectionDecoder(self, feature):
+        return self.fuselage_section_decoder(feature)
 
-    def wingSectionDecoder(
-            self, feature, teacher_sections, teacher_count, teacher_forcing_probability):
-        return self.wing_section_decoder(
-            feature, teacher_sections, teacher_count, teacher_forcing_probability
-        )
+    def wingSectionDecoder(self, feature):
+        return self.wing_section_decoder(feature)
 
     def generateFuselageSections(self, feature):
-        return self.fuselage_section_decoder.generate(feature)
+        return self.fuselage_section_decoder(feature)
 
     def generateWingSections(self, feature):
-        return self.wing_section_decoder.generate(feature)
+        return self.wing_section_decoder(feature)
 
     def adjDecoder(self, feature):
         return self.adj_decoder(feature)
@@ -602,19 +670,16 @@ class GRASSDecoder(nn.Module):
                 component_logits = self.component_classifier(feature)
                 component = int(torch.argmax(component_logits, dim=1).item())
                 if component == util.COMPONENT_FUSELAGE:
-                    generated = self.fuselage_section_decoder.generate(feature)
+                    global_parameters, sections = self.fuselage_section_decoder(feature)
                 elif component == util.COMPONENT_WING:
-                    generated = self.wing_section_decoder.generate(feature)
+                    global_parameters, sections = self.wing_section_decoder(feature)
                 else:
                     raise RuntimeError(f'free decoder predicted unsupported component {component}')
-                sections, section_count, valid_mask, count_logits = generated
                 common.update({
                     'component': component,
                     'component_logits': component_logits,
+                    'z_global': global_parameters,
                     'sections': sections,
-                    'section_count': section_count,
-                    'valid_mask': valid_mask,
-                    'count_logits': count_logits,
                 })
                 return common, 1, depth, int(forced)
             if node_type == Tree.NodeType.ADJ.value:
@@ -673,15 +738,14 @@ class GRASSDecoder(nn.Module):
         return torch.stack([payload_l, zero, zero, zero, zero, zero, component_l], dim=1)
 
     def wingSectionLossEstimator(
-            self, sections, count_logits, component_logits, gt_sections, gt_count, gt_component,
-            sequence_type=grassdata.SEQUENCE_TYPE_WING):
-        reconstruction_losses = wing_section_reconstruction_losses(
+            self, global_parameters, sections, component_logits,
+            gt_global_parameters, gt_sections, gt_component):
+        reconstruction_losses = fixed_wing_section_reconstruction_losses(
             self.wing_section_decoder.parameter_codec,
+            global_parameters,
             sections,
-            count_logits,
+            gt_global_parameters,
             gt_sections,
-            gt_count,
-            sequence_type,
         )
         component_l = F.cross_entropy(component_logits, gt_component.reshape(-1), reduction='none')
         zero = torch.zeros_like(reconstruction_losses['total'])
@@ -690,13 +754,14 @@ class GRASSDecoder(nn.Module):
         )
 
     def fuselageSectionLossEstimator(
-            self, sections, count_logits, component_logits, gt_sections, gt_count, gt_component):
-        reconstruction_losses = fuselage_section_reconstruction_losses(
+            self, global_parameters, sections, component_logits,
+            gt_global_parameters, gt_sections, gt_component):
+        reconstruction_losses = fixed_fuselage_section_reconstruction_losses(
             self.fuselage_section_decoder.parameter_codec,
+            global_parameters,
             sections,
-            count_logits,
+            gt_global_parameters,
             gt_sections,
-            gt_count,
         )
         component_l = F.cross_entropy(component_logits, gt_component.reshape(-1), reduction='none')
         zero = torch.zeros_like(reconstruction_losses['total'])
@@ -713,8 +778,7 @@ class GRASSDecoder(nn.Module):
         return torch.stack([self.creLoss(l.unsqueeze(0), gt.unsqueeze(0)) for l, gt in zip(label_vector, gt_label_vector)], 0)
 
 
-def decode_structure_fold(
-        fold, feature, tree, use_sample_decoder=True, teacher_forcing_probability=None):
+def decode_structure_fold(fold, feature, tree, use_sample_decoder=True):
     box_losses = []
     sym_losses = []
     cat_losses = []
@@ -722,38 +786,30 @@ def decode_structure_fold(
     def decode_node_box(node, feature):
         if node.is_leaf():
             if isinstance(node.box, dict):
-                if teacher_forcing_probability is None:
-                    raise ValueError('teacher_forcing_probability is required for sequence reconstruction.')
                 component = node.box["component"]
                 sequence_type = node.box['sequence_type']
                 component_logits = fold.add('componentClassifier', feature)
                 component_target = torch.LongTensor([component])
                 if sequence_type == grassdata.SEQUENCE_TYPE_WING:
-                    sections, count_logits = fold.add(
-                        'wingSectionDecoder', feature, node.box["sections"],
-                        node.box["section_count"], teacher_forcing_probability
-                    ).split(2)
+                    global_parameters, sections = fold.add('wingSectionDecoder', feature).split(2)
                     box_losses.append(fold.add(
                         'wingSectionLossEstimator',
+                        global_parameters,
                         sections,
-                        count_logits,
                         component_logits,
+                        node.box['z_global'],
                         node.box["sections"],
-                        node.box["section_count"],
                         component_target,
                     ))
                 elif sequence_type == grassdata.SEQUENCE_TYPE_FUSELAGE:
-                    sections, count_logits = fold.add(
-                        'fuselageSectionDecoder', feature, node.box["sections"],
-                        node.box["section_count"], teacher_forcing_probability
-                    ).split(2)
+                    global_parameters, sections = fold.add('fuselageSectionDecoder', feature).split(2)
                     box_losses.append(fold.add(
                         'fuselageSectionLossEstimator',
+                        global_parameters,
                         sections,
-                        count_logits,
                         component_logits,
+                        node.box['z_global'],
                         node.box["sections"],
-                        node.box["section_count"],
                         component_target,
                     ))
                 elif component == util.COMPONENT_ENGINE:

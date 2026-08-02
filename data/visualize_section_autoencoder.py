@@ -82,13 +82,13 @@ def configure_interactive_backend(backend):
     return plot, color_maps, color_normalization
 
 
-def make_component(sequence_type, sections, section_count):
+def make_component(sequence_type, sections):
     component = grassdata.sequence_spec(sequence_type)['component']
     transform, translation = geometry.identity_transform()
     return geometry.ComponentGeometry(
         component=component,
         sections=sections.detach().cpu().squeeze(0).numpy(),
-        section_count=int(section_count.detach().cpu().reshape(()).item()),
+        section_count=grassdata.sequence_max_sections(sequence_type),
         transform=transform,
         translation=translation,
         path=sequence_type,
@@ -128,11 +128,11 @@ def color_range(errors, color_normalization):
 
 
 def free_reconstruct(model, sample, device):
+    target_global = sample['z_global'].unsqueeze(0).to(device)
     target_sections = sample['sections'].unsqueeze(0).to(device)
-    target_count = sample['section_count'].reshape(1).to(device)
-    feature = model.section_encoder(target_sections, target_count)
-    generated_sections, generated_count, _, _ = model.section_decoder.generate(feature)
-    return target_sections, target_count, generated_sections, generated_count
+    feature = model.section_encoder(target_global, target_sections)
+    _generated_global, generated_sections = model.section_decoder(feature)
+    return target_sections, generated_sections
 
 
 def render_reconstruction(
@@ -191,29 +191,22 @@ def visualize_sequence_type(
     )
     with torch.no_grad():
         for leaf_index in selected_indices:
-            target_sections, target_count, generated_sections, generated_count = free_reconstruct(
+            target_sections, generated_sections = free_reconstruct(
                 model, leaves[leaf_index], device
             )
-            target = make_component(sequence_type, target_sections, target_count)
-            generated = make_component(sequence_type, generated_sections, generated_count)
+            target = make_component(sequence_type, target_sections)
+            generated = make_component(sequence_type, generated_sections)
             errors = section_geometry_errors(target, generated)
             render_reconstruction(
                 sequence_type, leaf_index, target, generated, errors, source_name,
                 plot, color_maps, color_normalization
             )
-            print(
-                f'  target_count={target.section_count} decoded_count={generated.section_count} matched={errors.size} '
-                f'extra_generated={max(0, generated.section_count - target.section_count)} '
-                f'missing_target={max(0, target.section_count - generated.section_count)} '
-                f'mean={errors.mean():.4f} max={errors.max():.4f}',
-                flush=True,
-            )
+            print(f'  sections={target.section_count}; mean={errors.mean():.4f} max={errors.max():.4f}', flush=True)
 
 
 def main():
     visualization_args, config = parse_args()
     config.overfit = visualization_args.source == 'overfit'
-    config.ae_rnn_type = util.validate_ae_rnn_type(config.ae_rnn_type)
     plot, color_maps, color_normalization = configure_interactive_backend(visualization_args.backend)
     device = choose_device(config)
     training_aircraft, validation_aircraft = make_aircraft_splits(config)

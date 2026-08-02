@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import cst_airfoil_codec
+import aircraft_dataset_common as common
 import grassdata
 import project_paths
 import util
@@ -28,6 +29,12 @@ ELLIPSE_SAMPLES = 25
 REFLECTION_SYM_TYPE = 1.0
 REFLECTION_TOLERANCE = 1e-6
 DEFAULT_OPENVSP_EXECUTABLE = Path(r"D:\3D\Projects\OpenVSP-3.51.0-win64\vsp.exe")
+WING_POSITION_START = 0
+WING_POSITION_END = WING_POSITION_START + 3
+WING_CHORD_INDEX = WING_POSITION_END
+WING_TWIST_INDEX = WING_CHORD_INDEX + 1
+WING_AIRFOIL_CODE_START = util.WING_SECTION_GEOMETRY_SIZE
+WING_AIRFOIL_CODE_END = WING_AIRFOIL_CODE_START + util.CST_AIRFOIL_CODE_SIZE
 
 
 def parse_args():
@@ -82,12 +89,66 @@ def open_vsp(vsp_executable, vsp_path):
     print(f"Opened OpenVSP model: {vsp_path}", flush=True)
 
 
+def structured_wing_sections(box):
+    count = grassdata.sequence_max_sections(box["sequence_type"])
+    sections = box["sections"].detach().cpu().squeeze(0)
+    latent = {
+        "z_global": box["z_global"].detach().cpu().reshape(-1).tolist(),
+        "z_section": sections[:count, :util.WING_SECTION_GEOMETRY_SIZE].tolist(),
+    }
+    absolute_geometry = common.wing_geometry_from_latent_fields(
+        latent["z_global"], latent["z_section"]
+    )
+    absolute_sections = torch.empty(
+        (count, util.WING_SECTION_SIZE), dtype=torch.float32
+    )
+    for index, station in enumerate(absolute_geometry):
+        absolute_sections[index] = torch.tensor(
+            [
+                *station["leading_edge_xyz"],
+                station["chord"],
+                station["twist"],
+                *sections[index, WING_AIRFOIL_CODE_START:WING_AIRFOIL_CODE_END].tolist(),
+            ],
+            dtype=torch.float32,
+        )
+    return absolute_sections
+
+
+def structured_fuselage_sections(box):
+    count = grassdata.sequence_max_sections(box["sequence_type"])
+    x_nose, y_center, z_center, length, width, height = (
+        box["z_global"].detach().cpu().reshape(-1).tolist()
+    )
+    normalized_sections = box["sections"].detach().cpu().squeeze(0)
+    absolute_sections = torch.empty((count, 5), dtype=torch.float32)
+    for index, section in enumerate(normalized_sections[:count]):
+        x_fraction, width_fraction, height_fraction = section[:3].tolist()
+        absolute_sections[index] = torch.tensor(
+            [
+                x_nose + x_fraction * length,
+                y_center,
+                z_center,
+                width_fraction * width,
+                height_fraction * height,
+            ],
+            dtype=torch.float32,
+        )
+    return absolute_sections
+
+
 def component_geometry(node):
     component = node.box["component"]
     if component in grassdata.AE_COMPONENT_TYPES:
+        sequence_type = node.box["sequence_type"]
+        sections = (
+            structured_wing_sections(node.box)
+            if component == util.COMPONENT_WING
+            else structured_fuselage_sections(node.box)
+        )
         return component, {
-            "sections": node.box["sections"].detach().cpu().squeeze(0),
-            "section_count": int(node.box["section_count"].item()),
+            "sections": sections,
+            "section_count": grassdata.sequence_max_sections(sequence_type),
         }
     geometry = node.box["geometry"].detach().cpu().reshape(-1).tolist()
     expected_size = util.COMPONENT_GEOMETRY_SIZES[component]
@@ -112,7 +173,7 @@ def reflect_geometry(component, geometry, symmetry):
     if component == util.COMPONENT_WING:
         sections = geometry["sections"].clone()
         count = geometry["section_count"]
-        sections[:count, 25] *= -1.0
+        sections[:count, WING_POSITION_START + 1] *= -1.0
         return component, {
             "sections": sections,
             "section_count": count,
@@ -214,20 +275,26 @@ def wing_section_points(section):
     import numpy as np
 
     twist_axis = np.array([0.0, 1.0, 0.0], dtype=float)
+    position = section[WING_POSITION_START:WING_POSITION_END]
+    chord = float(section[WING_CHORD_INDEX])
+    twist = float(section[WING_TWIST_INDEX])
     chord_axis = rotate_about_axis(
-        np.array([1.0, 0.0, 0.0], dtype=float), twist_axis, float(section[28])
+        np.array([1.0, 0.0, 0.0], dtype=float), twist_axis, twist
     )
     thickness_axis = rotate_about_axis(
-        np.array([0.0, 0.0, 1.0], dtype=float), twist_axis, float(section[28])
+        np.array([0.0, 0.0, 1.0], dtype=float), twist_axis, twist
     )
     curve = cst_airfoil_codec.decode_cst_airfoil_code(
-        torch.as_tensor(section[:util.CST_AIRFOIL_CODE_SIZE], dtype=torch.float32),
+        torch.as_tensor(
+            section[WING_AIRFOIL_CODE_START:WING_AIRFOIL_CODE_END],
+            dtype=torch.float32,
+        ),
         num_output_points=util.FREE_DECODE_ERROR_AIRFOIL_POINTS,
     ).squeeze(0).detach().cpu().numpy()
     return (
-        section[24:27]
-        + curve[:, :1] * float(section[27]) * chord_axis
-        + curve[:, 1:2] * float(section[27]) * thickness_axis
+        position
+        + curve[:, :1] * chord * chord_axis
+        + curve[:, 1:2] * chord * thickness_axis
     )
 
 

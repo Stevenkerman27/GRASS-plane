@@ -83,20 +83,16 @@ def mean_metrics(metric_sums, batch_count):
     return {name: value / batch_count for name, value in metric_sums.items()}
 
 
-def run_epoch(model, loader, optimizer, device, training, teacher_forcing_probability, gradient_clip):
+def run_epoch(model, loader, optimizer, device, training, gradient_clip):
     model.train(training)
     metric_sums = None
-    free_metric_sums = None if training else {}
     for batch in loader:
+        global_parameters = batch['z_global'].to(device)
         sections = batch['sections'].to(device)
-        section_count = batch['section_count'].to(device)
-        probability = torch.full(
-            (sections.size(0),), teacher_forcing_probability, dtype=sections.dtype, device=device
-        )
         with torch.set_grad_enabled(training):
-            predicted_sections, count_logits = model(sections, section_count, probability)
+            predicted_global_parameters, predicted_sections = model(global_parameters, sections)
             loss_vectors = section_autoencoder.reconstruction_losses(
-                model, predicted_sections, count_logits, sections, section_count
+                model, predicted_global_parameters, predicted_sections, global_parameters, sections
             )
             losses = {name: value.mean() for name, value in loss_vectors.items()}
             if training:
@@ -109,52 +105,28 @@ def run_epoch(model, loader, optimizer, device, training, teacher_forcing_probab
         for name, loss in losses.items():
             metric_sums[name] += loss.detach().item()
 
-        if not training:
-            with torch.no_grad():
-                free_probability = torch.zeros(sections.size(0), dtype=sections.dtype, device=device)
-                free_sections, free_count_logits = model(sections, section_count, free_probability)
-                free_vectors = section_autoencoder.reconstruction_losses(
-                    model, free_sections, free_count_logits, sections, section_count
-                )
-            if not free_metric_sums:
-                free_metric_sums = {name: 0.0 for name in free_vectors}
-            for name, value in free_vectors.items():
-                free_metric_sums[name] += value.mean().item()
     metrics = mean_metrics(metric_sums, len(loader))
-    if training:
-        return metrics, None
-    return metrics, mean_metrics(free_metric_sums, len(loader))
+    return metrics
 
 
-def save_loss_curves(history, free_history, learning_rate_history, probability_history, path):
+def save_loss_curves(history, learning_rate_history, path):
     metric_names = tuple(history['train'])
-    plot_count = len(metric_names) + 3
+    plot_count = len(metric_names) + 1
     columns = 2
     figure, axes = plt.subplots(ceil(plot_count / columns), columns, figsize=(12, 3.5 * ceil(plot_count / columns)))
     axes = list(axes.flat)
     epochs = range(1, len(history['train']['total']) + 1)
     for axis, metric_name in zip(axes[:len(metric_names)], metric_names):
         axis.plot(epochs, history['train'][metric_name], label='train')
-        axis.plot(epochs, history['validation'][metric_name], label='validation_teacher')
+        axis.plot(epochs, history['validation'][metric_name], label='validation')
         axis.set_title(metric_name)
         axis.set_yscale('log')
         axis.grid(True, alpha=0.3)
         axis.legend()
     axis = axes[len(metric_names)]
-    axis.plot(epochs, free_history['total'], label='validation_free')
-    axis.set_title('free_total')
-    axis.set_yscale('log')
-    axis.grid(True, alpha=0.3)
-    axis.legend()
-    axis = axes[len(metric_names) + 1]
     axis.plot(epochs, learning_rate_history)
     axis.set_title('learning_rate')
     axis.set_yscale('log')
-    axis.grid(True, alpha=0.3)
-    axis = axes[len(metric_names) + 2]
-    axis.plot(epochs, probability_history)
-    axis.set_title('teacher_forcing_probability')
-    axis.set_ylim(-0.05, 1.05)
     axis.grid(True, alpha=0.3)
     for axis in axes[plot_count:]:
         axis.set_visible(False)
@@ -195,40 +167,33 @@ def train_sequence_type(sequence_type, training_aircraft, validation_aircraft, c
     )
 
     history = {'train': None, 'validation': None}
-    free_history = None
     learning_rate_history = []
-    probability_history = []
     for epoch in range(1, final_epoch + 1):
-        probability = util.ae_teacher_forcing_probability(epoch, config)
-        train_metrics, _ = run_epoch(
-            model, train_loader, optimizer, device, True, probability, config.ae_gradient_clip
+        train_metrics = run_epoch(
+            model, train_loader, optimizer, device, True, config.ae_gradient_clip
         )
-        validation_metrics, free_validation_metrics = run_epoch(
-            model, validation_loader, optimizer, device, False, 1.0, config.ae_gradient_clip
+        validation_metrics = run_epoch(
+            model, validation_loader, optimizer, device, False, config.ae_gradient_clip
         )
         if history['train'] is None:
             history = {
                 'train': {name: [] for name in train_metrics},
                 'validation': {name: [] for name in validation_metrics},
             }
-            free_history = {name: [] for name in free_validation_metrics}
         for name in history['train']:
             history['train'][name].append(train_metrics[name])
             history['validation'][name].append(validation_metrics[name])
-            free_history[name].append(free_validation_metrics[name])
         scheduler.step(validation_metrics['total'])
         learning_rate = current_learning_rate(optimizer)
         learning_rate_history.append(learning_rate)
-        probability_history.append(probability)
         if epoch % config.ae_log_every == 0:
             print(
                 f'{sequence_type} epoch={epoch}/{final_epoch} '
                 f'train_total={train_metrics["total"]:.6f} '
                 f'validation_total={validation_metrics["total"]:.6f} '
-                f'free_total={free_validation_metrics["total"]:.6f} '
-                f'p_teacher={probability:.6f} learning_rate={learning_rate:.8g}'
+                f'learning_rate={learning_rate:.8g}'
             )
-        if epoch % util.AE_CHECKPOINT_EVERY == 0 or epoch == final_epoch:
+        if epoch == final_epoch:
             checkpoint = section_autoencoder.build_checkpoint(
                 model, epoch, optimizer, scheduler, validation_metrics, config
             )
@@ -239,21 +204,17 @@ def train_sequence_type(sequence_type, training_aircraft, validation_aircraft, c
 
     save_loss_curves(
         history,
-        free_history,
         learning_rate_history,
-        probability_history,
-        checkpoint_dir / f'loss_curves_{sequence_type}_{config.ae_rnn_type}.png',
+        checkpoint_dir / f'loss_curves_{sequence_type}.png',
     )
-    with (checkpoint_dir / f'training_metrics_{sequence_type}_{config.ae_rnn_type}.yaml').open(
+    with (checkpoint_dir / f'training_metrics_{sequence_type}.yaml').open(
             'w', encoding='utf-8') as stream:
         yaml.safe_dump(
             {
                 'schema': section_autoencoder.SECTION_AUTOENCODER_CHECKPOINT_SCHEMA,
                 'sequence_type': sequence_type,
                 'loss': history,
-                'free_loss': free_history,
                 'learning_rate': learning_rate_history,
-                'teacher_forcing_probability': probability_history,
             },
             stream,
             sort_keys=False,
@@ -262,17 +223,14 @@ def train_sequence_type(sequence_type, training_aircraft, validation_aircraft, c
 
 def main():
     config = util.get_args()
-    config.ae_rnn_type = util.validate_ae_rnn_type(config.ae_rnn_type)
-    util.validate_ae_teacher_forcing_schedule(config)
     util.validate_ae_weight_decay(config.ae_weight_decay)
     device = choose_device(config)
     set_seed(config.ae_seed, device.type == 'cuda')
     training_aircraft, validation_aircraft = make_aircraft_splits(config)
     print(
         f'Using {device}; train aircraft={len(training_aircraft)}; '
-        f'validation aircraft={len(validation_aircraft)}; '
-        f'recurrent_cell={config.ae_rnn_type}; feature_size={config.feature_size}; '
-        f'hidden_size={config.hidden_size}; overfit={config.overfit}; '
+        f'validation aircraft={len(validation_aircraft)}; feature_size={config.feature_size}; '
+        f'section_hidden_size={util.SECTION_CODEC_HIDDEN_SIZE}; overfit={config.overfit}; '
         f'weight_decay={config.ae_weight_decay}; '
         f'checkpoint_dir={section_ae_checkpoint_dir(config)}'
     )

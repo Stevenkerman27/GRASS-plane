@@ -1,5 +1,6 @@
 import os
 import sys
+from math import isclose
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -7,6 +8,40 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import infrastructure as infra
+
+
+SUPER_ELLIPSE_PARAMETERS = (
+    ("Super_MaxWidthLoc", 0.7),
+    ("Super_M", 1.0),
+    ("Super_N", 8.0),
+)
+
+
+def set_super_ellipse_fuselage_xsecs(fuselage_id, fuselage_xsecs):
+    xsec_surf = infra.vsp.GetXSecSurf(fuselage_id, 0)
+    for index, xsec in enumerate(fuselage_xsecs):
+        if xsec["width"] == 0.0:
+            continue
+        curve_group = f"XSecCurve_{index}"
+        infra.vsp.ChangeXSecShape(xsec_surf, index, infra.vsp.XS_SUPER_ELLIPSE)
+        infra.vsp.Update()
+        for parameter_name, parameter_value in SUPER_ELLIPSE_PARAMETERS:
+            parameter_id = infra.vsp.FindParm(fuselage_id, parameter_name, curve_group)
+            if not parameter_id:
+                raise RuntimeError(
+                    f"OpenVSP parameter is unavailable: {curve_group}/{parameter_name}"
+                )
+            infra.vsp.SetParmVal(parameter_id, parameter_value)
+            if not isclose(infra.vsp.GetParmVal(parameter_id), parameter_value):
+                raise RuntimeError(
+                    f"OpenVSP parameter was not applied: {curve_group}/{parameter_name}"
+                )
+        xsec_id = infra.vsp.GetXSec(xsec_surf, index)
+        if infra.vsp.GetXSecShape(xsec_id) != infra.vsp.XS_SUPER_ELLIPSE:
+            raise RuntimeError(f"OpenVSP did not apply SUPER_ELLIPSE to XSec_{index}")
+    for index in range(len(fuselage_xsecs)):
+        infra.vsp.ResetXSecSkinParms(infra.vsp.GetXSec(xsec_surf, index))
+    infra.vsp.Update()
 
 
 def main():
@@ -47,7 +82,8 @@ def main():
     Cl_target = infra.mass * infra.g / (0.5 * infra.density * cruise_spd**2 * wing_S)
 
     infra.ini_geom()
-    infra.create_fuselage(fuselage_pos, fuselage_xsecs, tess_int)
+    fuselage_id = infra.create_fuselage(fuselage_pos, fuselage_xsecs, tess_int)
+    set_super_ellipse_fuselage_xsecs(fuselage_id, fuselage_xsecs)
     infra.create_wing(wing_pos, spans, chords, twists, 0.0, tess_int, airfoil_cfg)
 
     wing_cfg = {

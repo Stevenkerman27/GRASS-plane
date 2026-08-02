@@ -27,21 +27,20 @@ def parse_args():
     parser.add_argument("--input-dir", type=Path, default=DATA_DIR / "conventional_canard_dataset")
     parser.add_argument("--output", type=Path, default=DATA_DIR / "conventional_canard_dataset" / "conventional_canard_dataset.pt")
     parser.add_argument("--cache", type=Path, default=DATA_DIR / "cst_airfoil_code_cache.pt")
-    parser.add_argument("--expected-count", type=int, default=200)
+    parser.add_argument("--expected-count", type=int, default=common.DATASET_SAMPLE_COUNT)
     return parser.parse_args()
 
 
-def wing_sections(component_name, sequence_type, source_sections, airfoil_cache):
-    expected_range = grassdata.sequence_section_count_range(sequence_type)
+def wing_sections(component_name, sequence_type, source_sections, airfoil_sources, airfoil_cache):
+    expected_count = grassdata.sequence_max_sections(sequence_type)
     count = len(source_sections)
-    if not expected_range[0] <= count <= expected_range[1]:
-        raise ValueError(
-            f'{component_name} section count must be in '
-            f'[{expected_range[0]}, {expected_range[1]}], got {count}'
-        )
+    if count != expected_count:
+        raise ValueError(f'{component_name} section count must be {expected_count}, got {count}')
     sections = []
-    for section_index, source_section in enumerate(source_sections):
-        source_path = source_section["airfoil_source"]
+    if len(airfoil_sources) != count:
+        raise ValueError(f'{component_name} airfoil_sources must match z_section')
+    for section_index, (source_section, source_path) in enumerate(
+            zip(source_sections, airfoil_sources, strict=True)):
         code = cst_airfoil_code_cache.lookup_code(airfoil_cache, source_path)
         if code is None:
             raise KeyError(
@@ -49,51 +48,35 @@ def wing_sections(component_name, sequence_type, source_sections, airfoil_cache)
                 "Run data/precompute_airfoil_codes.py before converting the dataset."
             )
         code = torch.as_tensor(code, dtype=torch.float32)
-        position = torch.as_tensor(
-            source_section["leading_edge_xyz"], dtype=torch.float32
-        )
-        chord = torch.tensor([source_section["chord"]], dtype=torch.float32)
-        twist = torch.tensor([source_section["twist"]], dtype=torch.float32)
-        section = torch.cat([code, position, chord, twist])
-        if section.numel() != 29:
+        section_geometry = torch.as_tensor(source_section, dtype=torch.float32)
+        section = torch.cat([section_geometry, code])
+        if section.numel() != util.WING_SECTION_SIZE:
             raise ValueError(
                 f'{component_name}.sections[{section_index}] has {section.numel()} values, '
-                'expected 29'
+                f'expected {util.WING_SECTION_SIZE}'
             )
         sections.append(section)
-    padded = torch.zeros(
-        (grassdata.sequence_max_sections(sequence_type), grassdata.sequence_section_size(sequence_type)),
-        dtype=torch.float32,
-    )
-    padded[:count] = torch.stack(sections)
+    encoded = torch.stack(sections)
     expected_shape = (grassdata.sequence_max_sections(sequence_type), grassdata.sequence_section_size(sequence_type))
-    if tuple(padded.shape) != expected_shape:
+    if tuple(encoded.shape) != expected_shape:
         raise ValueError(
             f'{component_name} sections have unexpected shape {list(padded.shape)}'
         )
-    return padded, count
+    return encoded
 
 
 def fuselage_sections(source_sections, sequence_type):
     count = len(source_sections)
-    expected_range = grassdata.sequence_section_count_range(sequence_type)
-    if not expected_range[0] <= count <= expected_range[1]:
-        raise ValueError(
-            f'fuselage section count must be in '
-            f'[{expected_range[0]}, {expected_range[1]}], got {count}'
-        )
+    expected_count = grassdata.sequence_max_sections(sequence_type)
+    if count != expected_count:
+        raise ValueError(f'fuselage section count must be {expected_count}, got {count}')
     sections = torch.as_tensor(source_sections, dtype=torch.float32)
     expected_shape = (count, util.FUSELAGE_SECTION_SIZE)
     if tuple(sections.shape) != expected_shape:
         raise ValueError(
             f'fuselage sections must have shape {list(expected_shape)}, got {list(sections.shape)}'
         )
-    padded = torch.zeros(
-        (grassdata.sequence_max_sections(sequence_type), grassdata.sequence_section_size(sequence_type)),
-        dtype=torch.float32,
-    )
-    padded[:count] = sections
-    return padded, count
+    return sections
 
 
 def build_structured_sample(payload, airfoil_cache):
@@ -103,25 +86,26 @@ def build_structured_sample(payload, airfoil_cache):
         sequence_type = component_payload['sequence_type']
         if component == util.COMPONENT_WING:
             component_name = component_payload["name"]
-            sections, count = wing_sections(
+            sections = wing_sections(
                 component_name,
                 sequence_type,
-                component_payload["sections"],
+                component_payload["z_section"],
+                component_payload['airfoil_sources'],
                 airfoil_cache,
             )
             box = {
                 "component": component,
                 'sequence_type': sequence_type,
-                "sections": sections,
-                "section_count": count,
+                'z_global': torch.as_tensor(component_payload['z_global'], dtype=torch.float32),
+                'z_section': sections,
             }
         elif component == util.COMPONENT_FUSELAGE:
-            sections, count = fuselage_sections(component_payload["sections"], sequence_type)
+            sections = fuselage_sections(component_payload["z_section"], sequence_type)
             box = {
                 "component": component,
                 'sequence_type': sequence_type,
-                "sections": sections,
-                "section_count": count,
+                'z_global': torch.as_tensor(component_payload['z_global'], dtype=torch.float32),
+                'z_section': sections,
             }
         else:
             box = {

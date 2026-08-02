@@ -124,7 +124,7 @@ def aggregate_losses(apply_results, has_boxes, has_symmetry, has_node_types, bat
     }
 
 
-def reconstruction_losses(encoder, decoder, batch, cuda_enabled, device, teacher_forcing_probability):
+def reconstruction_losses(encoder, decoder, batch, cuda_enabled, device):
     encoder_fold = FoldExt(cuda=cuda_enabled)
     encoded_nodes = [
         grassmodel.encode_structure_fold(encoder_fold, tree, use_sampler=False)
@@ -134,9 +134,6 @@ def reconstruction_losses(encoder, decoder, batch, cuda_enabled, device, teacher
     encoded_features = torch.split(encoded_features, 1, dim=0)
 
     decoder_fold = FoldExt(cuda=cuda_enabled)
-    teacher_forcing_probability = torch.tensor(
-        [teacher_forcing_probability], dtype=torch.float32, device=device
-    )
     box_nodes = []
     symmetry_nodes = []
     node_type_nodes = []
@@ -146,7 +143,6 @@ def reconstruction_losses(encoder, decoder, batch, cuda_enabled, device, teacher
             feature,
             tree,
             use_sample_decoder=False,
-            teacher_forcing_probability=teacher_forcing_probability,
         )
         box_nodes.extend(boxes)
         symmetry_nodes.extend(symmetries)
@@ -198,8 +194,7 @@ def mean_metrics(metric_sums, batch_count):
 
 
 def run_epoch(
-        encoder, decoder, loader, optimizer, config, cuda_enabled, device, training,
-        teacher_forcing_probability):
+        encoder, decoder, loader, optimizer, config, cuda_enabled, device, training):
     if training:
         encoder.train()
         decoder.train()
@@ -218,7 +213,7 @@ def run_epoch(
     for batch in loader:
         with torch.set_grad_enabled(training):
             losses = reconstruction_losses(
-                encoder, decoder, batch, cuda_enabled, device, teacher_forcing_probability
+                encoder, decoder, batch, cuda_enabled, device
             )
             if training:
                 optimizer.zero_grad(set_to_none=True)
@@ -262,13 +257,8 @@ def save_checkpoint(
             'free_validation_metrics': free_validation_metrics,
             'feature_size': config.feature_size,
             'hidden_size': config.hidden_size,
-            'ae_rnn_type': config.ae_rnn_type,
+            'section_hidden_size': util.SECTION_CODEC_HIDDEN_SIZE,
             'section_statistics': section_statistics,
-            'teacher_forcing_schedule': {
-                'p_final': config.ae_teacher_forcing_p_final,
-                'ramp_start_epoch': config.ae_teacher_forcing_ramp_start_epoch,
-                'ramp_end_epoch': config.ae_teacher_forcing_ramp_end_epoch,
-            },
         },
         path,
     )
@@ -312,10 +302,9 @@ def current_learning_rate(optimizer):
     return learning_rates.pop()
 
 
-def save_loss_curves(
-        history, learning_rate_history, teacher_forcing_probability_history, checkpoint_dir, rnn_type):
+def save_loss_curves(history, learning_rate_history, checkpoint_dir):
     epochs = range(1, len(history['train']['total']) + 1)
-    figure, axes = plt.subplots(4, 2, figsize=(12, 15), sharex=True)
+    figure, axes = plt.subplots(3, 2, figsize=(12, 11), sharex=True)
     for axis, metric_name in zip(axes.flat[:-1], history['train']):
         axis.plot(epochs, history['train'][metric_name], label='train')
         axis.plot(epochs, history['validation'][metric_name], label='validation')
@@ -331,22 +320,14 @@ def save_loss_curves(
     learning_rate_axis.set_yscale('log')
     learning_rate_axis.grid(True, alpha=0.3)
     learning_rate_axis.legend()
-    teacher_forcing_axis = axes.flat[6]
-    teacher_forcing_axis.plot(epochs, teacher_forcing_probability_history, label='p_teacher')
-    teacher_forcing_axis.set_title('teacher_forcing_probability')
-    teacher_forcing_axis.set_ylabel('probability')
-    teacher_forcing_axis.set_ylim(-0.05, 1.05)
-    teacher_forcing_axis.grid(True, alpha=0.3)
-    teacher_forcing_axis.legend()
-    axes.flat[7].set_visible(False)
     for axis in axes[-1]:
         axis.set_xlabel('epoch')
     figure.tight_layout()
-    figure.savefig(checkpoint_dir / f'loss_curves_{rnn_type}.png', dpi=160)
+    figure.savefig(checkpoint_dir / 'loss_curves.png', dpi=160)
     plt.close(figure)
 
 
-def save_free_generation_metrics(history, checkpoint_dir, rnn_type):
+def save_free_generation_metrics(history, checkpoint_dir):
     epochs = range(1, len(history['tree_valid_fraction']) + 1)
     figure, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True)
     for axis, metric_name in zip(axes.flat, history):
@@ -356,29 +337,23 @@ def save_free_generation_metrics(history, checkpoint_dir, rnn_type):
     for axis in axes[-1]:
         axis.set_xlabel('epoch')
     figure.tight_layout()
-    figure.savefig(checkpoint_dir / f'free_generation_metrics_{rnn_type}.png', dpi=160)
+    figure.savefig(checkpoint_dir / 'free_generation_metrics.png', dpi=160)
     plt.close(figure)
 
 
-def save_metrics_report(
-        history, free_history, learning_rate_history, teacher_forcing_probability_history,
-        checkpoint_dir, rnn_type):
+def save_metrics_report(history, free_history, learning_rate_history, checkpoint_dir):
     report = {
-        'ae_rnn_type': rnn_type,
         'loss': history,
         'free_generation': free_history,
         'learning_rate': learning_rate_history,
-        'teacher_forcing_probability': teacher_forcing_probability_history,
     }
-    report_path = checkpoint_dir / f'training_metrics_{rnn_type}.yaml'
+    report_path = checkpoint_dir / 'training_metrics.yaml'
     with report_path.open('w', encoding='utf-8') as stream:
         yaml.safe_dump(report, stream, sort_keys=False)
 
 
 def main():
     config = util.get_args()
-    config.ae_rnn_type = util.validate_ae_rnn_type(config.ae_rnn_type)
-    util.validate_ae_teacher_forcing_schedule(config)
     util.validate_ae_weight_decay(config.ae_weight_decay)
     device = choose_device(config)
     cuda_enabled = device.type == 'cuda'
@@ -409,11 +384,8 @@ def main():
     print(
         f'Using {device}; train samples={len(train_loader.dataset)}; '
         f'validation samples={len(validation_loader.dataset)}; '
-        f'recurrent_cell={config.ae_rnn_type}; '
-        f'weight_decay={config.ae_weight_decay}; '
-        f'p_final={config.ae_teacher_forcing_p_final}; '
-        f'ramp=[{config.ae_teacher_forcing_ramp_start_epoch}, '
-        f'{config.ae_teacher_forcing_ramp_end_epoch}]'
+        f'section_hidden_size={util.SECTION_CODEC_HIDDEN_SIZE}; '
+        f'weight_decay={config.ae_weight_decay}'
     )
     best_validation_total = float('inf')
     history = {
@@ -427,9 +399,7 @@ def main():
         'forced_by_limit_count': [],
     }
     learning_rate_history = []
-    teacher_forcing_probability_history = []
     for epoch in range(1, config.ae_epochs + 1):
-        teacher_forcing_probability = util.ae_teacher_forcing_probability(epoch, config)
         train_metrics, _ = run_epoch(
             encoder,
             decoder,
@@ -439,7 +409,6 @@ def main():
             cuda_enabled,
             device,
             training=True,
-            teacher_forcing_probability=teacher_forcing_probability,
         )
         validation_metrics, free_validation_metrics = run_epoch(
             encoder,
@@ -450,7 +419,6 @@ def main():
             cuda_enabled,
             device,
             training=False,
-            teacher_forcing_probability=1.0,
         )
         for metric_name in history['train']:
             history['train'][metric_name].append(train_metrics[metric_name])
@@ -460,42 +428,36 @@ def main():
         scheduler.step(validation_metrics['total'])
         learning_rate = current_learning_rate(optimizer)
         learning_rate_history.append(learning_rate)
-        teacher_forcing_probability_history.append(teacher_forcing_probability)
         if epoch % config.ae_log_every == 0:
             print(
                 f'epoch={epoch}/{config.ae_epochs} '
                 f'train[{format_metrics(train_metrics)}] '
                 f'validation[{format_metrics(validation_metrics)}] '
                 f'free_validation[{format_metrics(free_validation_metrics)}] '
-                f'p_teacher={teacher_forcing_probability:.6f} '
                 f'learning_rate={learning_rate:.8g}'
             )
         if epoch % util.AE_CHECKPOINT_EVERY == 0 or epoch == config.ae_epochs:
             save_checkpoint(
-                checkpoint_dir / f'last_{config.ae_rnn_type}.pt', epoch, encoder, decoder, optimizer, scheduler,
+                checkpoint_dir / 'last.pt', epoch, encoder, decoder, optimizer, scheduler,
                 validation_metrics, free_validation_metrics, config
             )
             if validation_metrics['total'] < best_validation_total:
                 best_validation_total = validation_metrics['total']
                 save_checkpoint(
-                    checkpoint_dir / f'best_{config.ae_rnn_type}.pt', epoch, encoder, decoder, optimizer, scheduler,
+                    checkpoint_dir / 'best.pt', epoch, encoder, decoder, optimizer, scheduler,
                     validation_metrics, free_validation_metrics, config
                 )
     save_loss_curves(
         history,
         learning_rate_history,
-        teacher_forcing_probability_history,
         checkpoint_dir,
-        config.ae_rnn_type,
     )
-    save_free_generation_metrics(free_history, checkpoint_dir, config.ae_rnn_type)
+    save_free_generation_metrics(free_history, checkpoint_dir)
     save_metrics_report(
         history,
         free_history,
         learning_rate_history,
-        teacher_forcing_probability_history,
         checkpoint_dir,
-        config.ae_rnn_type,
     )
 
 

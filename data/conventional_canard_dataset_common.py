@@ -12,8 +12,8 @@ import util
 
 
 DATASET_SAMPLE_COUNT = flying_wing.DATASET_SAMPLE_COUNT
-GEOMETRY_SCHEMA = 'conventional_canard_variable_layout_v1'
-TOPOLOGY_NAME = 'symmetric_main_auxiliary_wing_fuselage_sequence_v1'
+GEOMETRY_SCHEMA = 'conventional_canard_global_section_v1'
+TOPOLOGY_NAME = 'symmetric_main_auxiliary_wing_fuselage_global_section_v1'
 LAYOUT_CONVENTIONAL = 'conventional'
 LAYOUT_CANARD = 'canard'
 LAYOUTS = (LAYOUT_CONVENTIONAL, LAYOUT_CANARD)
@@ -48,7 +48,17 @@ def _sample_auxiliary_plan(rng, fuselage_length, main_plan, layout):
         main_plan['tip_twist'],
         main_plan['semi_span'] * rng.uniform(*AUXILIARY_WINGSPAN_RATIO_RANGE),
     )
-    plan['section_count'] = rng.randint(*util.AUXILIARY_WING_SECTION_COUNT_RANGE)
+    plan['section_count'] = util.WING_SECTION_COUNT
+    plan['span_fractions'] = flying_wing.sample_wing_span_fractions(rng, plan['section_count'])
+    plan['twist_degrees'] = flying_wing._sample_bounded_sequence(
+        rng,
+        util.WING_SECTION_COUNT,
+        flying_wing.WING_TWIST_DEG_RANGE,
+        flying_wing.WING_TWIST_MAX_ADJACENT_DELTA_DEG,
+    )
+    plan['root_twist'] = math.radians(plan['twist_degrees'][0])
+    plan['tip_twist'] = math.radians(plan['twist_degrees'][-1])
+    flying_wing.configure_wing_section_jitter(rng, plan)
     minimum_separation = MIN_LONGITUDINAL_SEPARATION_FRACTION * fuselage_length
     maximum_separation = MAX_LONGITUDINAL_SEPARATION_FRACTION * fuselage_length
     main_min_x, main_max_x = wing_longitudinal_envelope(
@@ -137,6 +147,9 @@ def build_random_reference(rng, layout):
             flying_wing.build_wing_planform_sections(auxiliary_plan)
         )
         if 0.0 <= auxiliary_root_min_x and auxiliary_root_max_x <= fuselage_length:
+            flying_wing.sample_wing_root_leading_edge_z(
+                rng, reference['fuselage_xsecs'], auxiliary_plan
+            )
             reference['auxiliary_wing_plan'] = auxiliary_plan
             return reference
     raise RuntimeError(
@@ -221,16 +234,15 @@ def component_for_label(label):
 def build_geometry_component(label, reference, wings):
     sequence_type = sequence_type_for_label(label)
     if label == FUSELAGE_COMPONENT_NAME:
-        sections = reference['fuselage_sections']
-        flying_wing.validate_fuselage_sections(sections)
+        latent = reference['fuselage_latent']
+        flying_wing.validate_fuselage_latent(latent)
     else:
-        sections = wings[label]
-        validate_wing_sections(label, sections)
+        latent = flying_wing.build_wing_latent(wings[label])
     return {
         'name': label,
         'component': component_for_label(label),
         'sequence_type': sequence_type,
-        'sections': sections,
+        **latent,
     }
 
 
@@ -262,29 +274,24 @@ def write_geometry_payload(payload, path):
 
 
 def validate_wing_sections(label, sections):
-    expected_range = (
-        util.AUXILIARY_WING_SECTION_COUNT_RANGE
-        if label == AUXILIARY_WING_COMPONENT_NAME
-        else util.SECTION_COUNT_RANGE
-    )
-    if not expected_range[0] <= len(sections) <= expected_range[1]:
-        raise ValueError(f'{label} section count must be in {expected_range}')
+    if len(sections) != util.WING_SECTION_COUNT:
+        raise ValueError(f'{label} must contain {util.WING_SECTION_COUNT} sections')
     flying_wing.validate_single_wing_sections(sections)
 
 
 def _validate_layout_positions(payload):
     components = {component['name']: component for component in payload['half_components']}
-    fuselage_length = components[FUSELAGE_COMPONENT_NAME]['sections'][-1][0]
+    fuselage_length = components[FUSELAGE_COMPONENT_NAME]['z_global'][3]
     main_min_x, main_max_x = wing_longitudinal_envelope(
-        components[MAIN_WING_COMPONENT_NAME]['sections']
+        flying_wing.wing_geometry_from_latent(components[MAIN_WING_COMPONENT_NAME])
     )
     auxiliary_min_x, auxiliary_max_x = wing_longitudinal_envelope(
-        components[AUXILIARY_WING_COMPONENT_NAME]['sections']
+        flying_wing.wing_geometry_from_latent(components[AUXILIARY_WING_COMPONENT_NAME])
     )
     minimum_separation = MIN_LONGITUDINAL_SEPARATION_FRACTION * fuselage_length
     maximum_separation = MAX_LONGITUDINAL_SEPARATION_FRACTION * fuselage_length
     auxiliary_root_min_x, auxiliary_root_max_x = root_chord_longitudinal_envelope(
-        components[AUXILIARY_WING_COMPONENT_NAME]['sections']
+        flying_wing.wing_geometry_from_latent(components[AUXILIARY_WING_COMPONENT_NAME])
     )
     if auxiliary_root_min_x < 0.0 or auxiliary_root_max_x > fuselage_length:
         raise ValueError('auxiliary root chord must remain within the fuselage longitudinal range')
@@ -327,9 +334,9 @@ def validate_geometry_payload(payload):
         if component_payload.get('sequence_type') != sequence_type_for_label(label):
             raise ValueError(f'{label} has an unexpected sequence type')
         if label == FUSELAGE_COMPONENT_NAME:
-            flying_wing.validate_fuselage_sections(component_payload['sections'])
+            flying_wing.validate_fuselage_latent(component_payload)
         else:
-            validate_wing_sections(label, component_payload['sections'])
+            flying_wing.validate_wing_latent(component_payload)
     _validate_layout_positions(payload)
 
 
@@ -352,6 +359,9 @@ def create_openvsp_aircraft(reference, wings, output_path):
         {'name': FUSELAGE_COMPONENT_NAME, 'x': 0.0, 'y': 0.0, 'z': 0.0, 'yr': 0.0},
         reference['fuselage_xsecs'],
         flying_wing.TESS_INT,
+    )
+    flying_wing.set_super_ellipse_fuselage_xsecs(
+        infra.vsp, fuselage_id, reference['fuselage_xsecs']
     )
     flying_wing.set_round_end_caps(infra.vsp, fuselage_id, FUSELAGE_COMPONENT_NAME)
     for label in WING_COMPONENTS:

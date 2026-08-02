@@ -2,7 +2,6 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import torch
 
 
@@ -10,85 +9,55 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import util
 import grassdata
+import grassmodel
 import section_parameter_codec
-from grassmodel import GRASSDecoder, GRASSEncoder
+import util
 
 
-def model_config(rnn_type):
-    return SimpleNamespace(
-        box_code_size=13,
-        feature_size=12,
-        hidden_size=16,
-        symmetry_size=8,
-        ae_rnn_type=rnn_type,
+def payload(sequence_type, batch_size=2):
+    if sequence_type == grassdata.SEQUENCE_TYPE_WING:
+        global_parameters = torch.tensor([[0.0, 0.0, 0.0, 2.0, 6.0]]).repeat(batch_size, 1)
+        sections = torch.zeros(batch_size, util.WING_SECTION_COUNT, util.WING_SECTION_SIZE)
+        sections[..., 0] = torch.linspace(0.0, 1.0, util.WING_SECTION_COUNT)
+        sections[..., 1] = 1.0
+        sections[..., -2:] = 0.5
+        return global_parameters, sections
+    global_parameters = torch.tensor([[0.0, 0.0, 0.0, 12.0, 3.0, 2.0]]).repeat(batch_size, 1)
+    sections = torch.zeros(batch_size, util.FUSELAGE_SECTION_COUNT, util.FUSELAGE_SECTION_SIZE)
+    sections[..., 0] = torch.linspace(0.0, 1.0, util.FUSELAGE_SECTION_COUNT)
+    sections[..., 1:3] = 0.7
+    sections[:, (0, -1), 1:3] = 0.1
+    sections[..., 4:6] = 2.0
+    return global_parameters, sections
+
+
+def statistics(sequence_type):
+    global_parameters, sections = payload(sequence_type)
+    return section_parameter_codec.fit_section_parameter_statistics(
+        [
+            {'z_global': global_parameters[index], 'sections': sections[index]}
+            for index in range(global_parameters.size(0))
+        ],
+        sequence_type,
     )
 
 
-def section_statistics():
-    return {
-        sequence_type: {
-            'schema': section_parameter_codec.SECTION_PARAMETER_CODEC_SCHEMA,
-            'sequence_type': sequence_type,
-            'mean': torch.zeros(grassdata.sequence_section_size(sequence_type)),
-            'std': torch.ones(grassdata.sequence_section_size(sequence_type)),
-            'constant_mask': torch.zeros(
-                grassdata.sequence_section_size(sequence_type), dtype=torch.bool
-            ),
-        }
-        for sequence_type in (
-            grassdata.SEQUENCE_TYPE_WING,
-            grassdata.SEQUENCE_TYPE_FUSELAGE,
-        )
-    }
+def test_fixed_section_encoder_and_decoder_architecture():
+    sequence_type = grassdata.SEQUENCE_TYPE_WING
+    encoder = grassmodel.SectionEncoder(sequence_type, 128, statistics(sequence_type))
+    decoder = grassmodel.SectionDecoder(sequence_type, 128, statistics(sequence_type))
 
+    assert isinstance(encoder.conv1, torch.nn.Conv1d)
+    assert encoder.conv1.in_channels == util.WING_SECTION_SIZE
+    assert encoder.conv1.out_channels == util.SECTION_CODEC_CONV_CHANNELS
+    assert encoder.hidden.out_features == util.SECTION_CODEC_HIDDEN_SIZE
+    assert decoder.hidden.out_features == util.SECTION_CODEC_HIDDEN_SIZE
+    assert decoder.output.out_features == 140
 
-@pytest.mark.parametrize(
-    ('rnn_type', 'encoder_cell', 'decoder_cell'),
-    [
-    ('rnn', torch.nn.RNN, torch.nn.RNNCell),
-    ('gru', torch.nn.GRU, torch.nn.GRUCell),
-    ],
-)
-def test_recurrent_type_selects_encoder_and_decoder_cells(
-        rnn_type, encoder_cell, decoder_cell):
-    config = model_config(rnn_type)
-    statistics = section_statistics()
-    encoder = GRASSEncoder(config, statistics)
-    decoder = GRASSDecoder(config, statistics)
-
-    assert isinstance(encoder.fuselage_section_encoder.rnn, encoder_cell)
-    assert isinstance(encoder.wing_section_encoder.rnn, encoder_cell)
-    assert isinstance(decoder.fuselage_section_decoder.rnn, decoder_cell)
-    assert isinstance(decoder.wing_section_decoder.rnn, decoder_cell)
-    assert decoder.fuselage_section_decoder.rnn.input_size == (
-        util.FUSELAGE_SECTION_SIZE + config.feature_size + 1
-    )
-    assert decoder.wing_section_decoder.rnn.input_size == (
-        grassdata.sequence_section_size(grassdata.SEQUENCE_TYPE_WING)
-        + config.feature_size
-        + 1
-    )
-
-    fuselage_sections = torch.zeros(2, util.SECTION_COUNT_RANGE[1], util.FUSELAGE_SECTION_SIZE)
-    fuselage_sections[..., 0] = torch.arange(util.SECTION_COUNT_RANGE[1])
-    fuselage_sections[..., 3:5] = 1.0
-    fuselage_count = torch.tensor([2, util.SECTION_COUNT_RANGE[1]])
-    fuselage_features = encoder.fuselageSectionEncoder(fuselage_sections, fuselage_count)
-    reconstructed, count_logits = decoder.fuselageSectionDecoder(
-        fuselage_features, fuselage_sections, fuselage_count, torch.tensor([1.0])
-    )
-    generated, count, valid_mask, _ = decoder.generateFuselageSections(fuselage_features)
-
-    assert fuselage_features.shape == (2, config.feature_size)
-    assert reconstructed.shape == fuselage_sections.shape
-    assert count_logits.shape == (2, util.SECTION_COUNT_RANGE[1] - util.SECTION_COUNT_RANGE[0] + 1)
-    assert generated.shape == fuselage_sections.shape
-    assert count.shape == (2,)
-    assert valid_mask.shape == (2, util.SECTION_COUNT_RANGE[1])
-
-
-def test_recurrent_type_rejects_unknown_value():
-    with pytest.raises(ValueError, match='ae_rnn_type'):
-        GRASSEncoder(model_config('lstm'), section_statistics())
+    global_parameters, sections = payload(sequence_type)
+    features = encoder(global_parameters, sections)
+    reconstructed_global, reconstructed_sections = decoder(features)
+    assert features.shape == (2, 128)
+    assert reconstructed_global.shape == global_parameters.shape
+    assert reconstructed_sections.shape == sections.shape

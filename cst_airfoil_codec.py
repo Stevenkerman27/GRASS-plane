@@ -1,4 +1,4 @@
-"""24D Kulfan CST encoding with a fixed physical leading edge at (0, 0)."""
+"""Kulfan CST encoding with a fixed physical leading edge at (0, 0)."""
 
 from pathlib import Path
 import math
@@ -11,13 +11,7 @@ import airfoil_sampling
 import util
 
 
-PROCESSED_AIRFOIL_ENCODING_VERSION = 'fixed_leading_edge_cst_v2'
-CST_FIT_CONFIG_KEYS = (
-    'iterations', 'lr', 'loss_scale', 'coefficient_reg', 'leading_edge_window',
-    'leading_edge_weight_amplitude', 'scheduler_patience', 'scheduler_factor',
-    'log_interval', 'surface_shape_coefficients', 'initial_n1', 'initial_n2',
-    'minimum_class_function_exponent',
-)
+PROCESSED_AIRFOIL_ENCODING_VERSION = 'fixed_leading_edge_centered_trailing_edge_cst_v3'
 CST_FIT_METRIC_KEYS = (
     'mae', 'mse', 'max_point_error', 'leading_edge_mae', 'leading_edge_mse',
 )
@@ -25,6 +19,25 @@ CST_FIT_METRIC_KEYS = (
 
 def cst_fit_config():
     return dict(util.CST_FIT_CONFIG)
+
+
+def resolve_shape_coefficient_count(shape_coefficient_count=None):
+    count = (
+        util.CST_SURFACE_SHAPE_COEFFICIENTS
+        if shape_coefficient_count is None else shape_coefficient_count
+    )
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise TypeError(
+            'shape_coefficient_count must be an integer, '
+            f'got {type(count).__name__}'
+        )
+    if count < 1:
+        raise ValueError(f'shape_coefficient_count must be positive, got {count}')
+    return count
+
+
+def cst_airfoil_code_size(shape_coefficient_count=None):
+    return 2 * resolve_shape_coefficient_count(shape_coefficient_count) + util.CST_BOUNDARY_CODE_SIZE
 
 
 def load_dat(dat_path):
@@ -95,89 +108,39 @@ def _bernstein_basis(x_values, coefficient_count):
     return basis
 
 
-def validate_fit_config(fit_config):
-    for key in CST_FIT_CONFIG_KEYS:
-        if key not in fit_config:
-            raise KeyError(f'fit_config missing required key: {key}')
-    if fit_config['iterations'] <= 0:
-        raise ValueError(f"iterations must be positive, got {fit_config['iterations']}")
-    if fit_config['lr'] <= 0:
-        raise ValueError(f"lr must be positive, got {fit_config['lr']}")
-    if fit_config['loss_scale'] <= 0:
-        raise ValueError(f"loss_scale must be positive, got {fit_config['loss_scale']}")
-    if fit_config['coefficient_reg'] < 0:
-        raise ValueError(f"coefficient_reg must be non-negative, got {fit_config['coefficient_reg']}")
-    if fit_config['leading_edge_window'] < 0:
-        raise ValueError(
-            f"leading_edge_window must be non-negative, got {fit_config['leading_edge_window']}"
-        )
-    if fit_config['leading_edge_weight_amplitude'] < 0:
-        raise ValueError(
-            'leading_edge_weight_amplitude must be non-negative, '
-            f"got {fit_config['leading_edge_weight_amplitude']}"
-        )
-    if fit_config['scheduler_patience'] < 0:
-        raise ValueError(
-            f"scheduler_patience must be non-negative, got {fit_config['scheduler_patience']}"
-        )
-    if not 0.0 < fit_config['scheduler_factor'] < 1.0:
-        raise ValueError(
-            f"scheduler_factor must be in (0, 1), got {fit_config['scheduler_factor']}"
-        )
-    if fit_config['log_interval'] <= 0:
-        raise ValueError(f"log_interval must be positive, got {fit_config['log_interval']}")
-    if fit_config['surface_shape_coefficients'] != util.CST_SURFACE_SHAPE_COEFFICIENTS:
-        raise ValueError(
-            'surface_shape_coefficients must equal '
-            f'util.CST_SURFACE_SHAPE_COEFFICIENTS ({util.CST_SURFACE_SHAPE_COEFFICIENTS})'
-        )
-    if fit_config['initial_n1'] <= fit_config['minimum_class_function_exponent']:
-        raise ValueError(
-            'initial_n1 must exceed minimum_class_function_exponent'
-        )
-    if fit_config['initial_n2'] <= fit_config['minimum_class_function_exponent']:
-        raise ValueError(
-            'initial_n2 must exceed minimum_class_function_exponent'
-        )
-    if fit_config['minimum_class_function_exponent'] != util.CST_MIN_CLASS_FUNCTION_EXPONENT:
-        raise ValueError(
-            'minimum_class_function_exponent must equal util.CST_MIN_CLASS_FUNCTION_EXPONENT '
-            f'({util.CST_MIN_CLASS_FUNCTION_EXPONENT})'
-        )
-
-
-def _as_batched_code(code):
+def _as_batched_code(code, shape_coefficient_count):
     tensor = torch.as_tensor(code, dtype=torch.float32)
     unbatched = tensor.dim() == 1
     if unbatched:
         tensor = tensor.unsqueeze(0)
-    if tensor.dim() != 2 or tensor.size(1) != util.CST_AIRFOIL_CODE_SIZE:
+    code_size = cst_airfoil_code_size(shape_coefficient_count)
+    if tensor.dim() != 2 or tensor.size(1) != code_size:
         raise ValueError(
-            f'CST code must have shape [{util.CST_AIRFOIL_CODE_SIZE}] or '
-            f'[B, {util.CST_AIRFOIL_CODE_SIZE}], got {list(tensor.size())}'
+            f'CST code must have shape [{code_size}] or '
+            f'[B, {code_size}], got {list(tensor.size())}'
         )
     if not torch.isfinite(tensor).all():
         raise ValueError('CST code must contain only finite values')
     return tensor, unbatched
 
 
-def _as_batched_shape_coefficients(coefficients, name):
+def _as_batched_shape_coefficients(coefficients, name, shape_coefficient_count):
     tensor = torch.as_tensor(coefficients, dtype=torch.float32)
     unbatched = tensor.dim() == 1
     if unbatched:
         tensor = tensor.unsqueeze(0)
-    if tensor.dim() != 2 or tensor.size(1) != util.CST_SURFACE_SHAPE_COEFFICIENTS:
+    if tensor.dim() != 2 or tensor.size(1) != shape_coefficient_count:
         raise ValueError(
-            f'{name} must have shape [{util.CST_SURFACE_SHAPE_COEFFICIENTS}] or '
-            f'[B, {util.CST_SURFACE_SHAPE_COEFFICIENTS}], got {list(tensor.size())}'
+            f'{name} must have shape [{shape_coefficient_count}] or '
+            f'[B, {shape_coefficient_count}], got {list(tensor.size())}'
         )
     if not torch.isfinite(tensor).all():
         raise ValueError(f'{name} must contain only finite values')
     return tensor, unbatched
 
 
-def _as_batched_trailing_edge_y(trailing_edge_y, name):
-    tensor = torch.as_tensor(trailing_edge_y, dtype=torch.float32)
+def _as_batched_scalar(value, name):
+    tensor = torch.as_tensor(value, dtype=torch.float32)
     if tensor.dim() == 0:
         tensor = tensor.reshape(1, 1)
         unbatched = True
@@ -194,7 +157,7 @@ def _as_batched_trailing_edge_y(trailing_edge_y, name):
 
 
 def _as_batched_class_exponent(exponent, name):
-    tensor, unbatched = _as_batched_trailing_edge_y(exponent, name)
+    tensor, unbatched = _as_batched_scalar(exponent, name)
     if not torch.all(tensor > util.CST_MIN_CLASS_FUNCTION_EXPONENT):
         raise ValueError(
             f'{name} must exceed {util.CST_MIN_CLASS_FUNCTION_EXPONENT}'
@@ -205,90 +168,84 @@ def _as_batched_class_exponent(exponent, name):
 def pack_cst_airfoil_code(
         upper_shape_coefficients,
         lower_shape_coefficients,
-        upper_trailing_edge_y,
-        lower_trailing_edge_y,
+        trailing_edge_thickness,
         class_function_n1,
-        class_function_n2):
+        class_function_n2,
+        shape_coefficient_count=None):
+    coefficient_count = resolve_shape_coefficient_count(shape_coefficient_count)
     upper, upper_unbatched = _as_batched_shape_coefficients(
-        upper_shape_coefficients, 'upper_shape_coefficients'
+        upper_shape_coefficients, 'upper_shape_coefficients', coefficient_count
     )
     lower, lower_unbatched = _as_batched_shape_coefficients(
-        lower_shape_coefficients, 'lower_shape_coefficients'
+        lower_shape_coefficients, 'lower_shape_coefficients', coefficient_count
     )
-    upper_te, upper_te_unbatched = _as_batched_trailing_edge_y(
-        upper_trailing_edge_y, 'upper_trailing_edge_y'
-    )
-    lower_te, lower_te_unbatched = _as_batched_trailing_edge_y(
-        lower_trailing_edge_y, 'lower_trailing_edge_y'
+    trailing_edge_thickness, thickness_unbatched = _as_batched_scalar(
+        trailing_edge_thickness, 'trailing_edge_thickness'
     )
     n1, n1_unbatched = _as_batched_class_exponent(class_function_n1, 'class_function_n1')
     n2, n2_unbatched = _as_batched_class_exponent(class_function_n2, 'class_function_n2')
     batch_size = upper.size(0)
     for name, tensor in (
             ('lower_shape_coefficients', lower),
-            ('upper_trailing_edge_y', upper_te),
-            ('lower_trailing_edge_y', lower_te),
+            ('trailing_edge_thickness', trailing_edge_thickness),
             ('class_function_n1', n1),
             ('class_function_n2', n2)):
         if tensor.size(0) != batch_size:
             raise ValueError(f'{name} batch size {tensor.size(0)} does not match {batch_size}')
-    code = torch.cat([upper, lower, upper_te, lower_te, n1, n2], dim=1)
-    if code.size(1) != util.CST_AIRFOIL_CODE_SIZE:
+    code = torch.cat([upper, lower, trailing_edge_thickness, n1, n2], dim=1)
+    code_size = cst_airfoil_code_size(coefficient_count)
+    if code.size(1) != code_size:
         raise RuntimeError(
-            f'Packed CST code has {code.size(1)} values, expected {util.CST_AIRFOIL_CODE_SIZE}'
+            f'Packed CST code has {code.size(1)} values, expected {code_size}'
         )
-    if (upper_unbatched and lower_unbatched and upper_te_unbatched and lower_te_unbatched
+    if (upper_unbatched and lower_unbatched and thickness_unbatched
             and n1_unbatched and n2_unbatched):
         return code.squeeze(0)
     return code
 
 
-def unpack_cst_airfoil_code(code):
-    code_tensor, unbatched = _as_batched_code(code)
-    coefficient_count = util.CST_SURFACE_SHAPE_COEFFICIENTS
+def unpack_cst_airfoil_code(code, shape_coefficient_count=None):
+    coefficient_count = resolve_shape_coefficient_count(shape_coefficient_count)
+    code_tensor, unbatched = _as_batched_code(code, coefficient_count)
     offset = 0
     upper = code_tensor[:, offset:offset + coefficient_count]
     offset += coefficient_count
     lower = code_tensor[:, offset:offset + coefficient_count]
     offset += coefficient_count
-    upper_te = code_tensor[:, offset:offset + 1]
-    offset += 1
-    lower_te = code_tensor[:, offset:offset + 1]
+    trailing_edge_thickness = code_tensor[:, offset:offset + 1]
     offset += 1
     n1 = code_tensor[:, offset:offset + 1]
     offset += 1
     n2 = code_tensor[:, offset:offset + 1]
     offset += 1
-    if offset != util.CST_AIRFOIL_CODE_SIZE:
-        raise RuntimeError(f'Expected to consume {util.CST_AIRFOIL_CODE_SIZE} CST values, consumed {offset}')
+    code_size = cst_airfoil_code_size(coefficient_count)
+    if offset != code_size:
+        raise RuntimeError(f'Expected to consume {code_size} CST values, consumed {offset}')
     _as_batched_class_exponent(n1, 'class_function_n1')
     _as_batched_class_exponent(n2, 'class_function_n2')
     result = {
-        'upper': {'shape_coefficients': upper, 'trailing_edge_y': upper_te},
-        'lower': {'shape_coefficients': lower, 'trailing_edge_y': lower_te},
+        'upper_shape_coefficients': upper,
+        'lower_shape_coefficients': lower,
+        'trailing_edge_thickness': trailing_edge_thickness,
         'class_function_n1': n1,
         'class_function_n2': n2,
     }
     if unbatched:
         unpacked = {
-            surface_name: {
-                'shape_coefficients': values['shape_coefficients'].squeeze(0),
-                'trailing_edge_y': values['trailing_edge_y'].squeeze(0),
-            }
-            for surface_name, values in result.items()
-            if surface_name in ('upper', 'lower')
+            key: value.squeeze(0)
+            for key, value in result.items()
         }
-        unpacked['class_function_n1'] = n1.squeeze(0)
-        unpacked['class_function_n2'] = n2.squeeze(0)
         return unpacked
     return result
 
 
-def _class_shape_y(shape_coefficients, trailing_edge_y, class_function_n1, class_function_n2, x):
+def _class_shape_y(
+        shape_coefficients, trailing_edge_y, class_function_n1, class_function_n2, x,
+        shape_coefficient_count):
     if not torch.all((x >= -1e-5) & (x <= util.AIRFOIL_TRAILING_EDGE_X + 1e-5)):
         raise ValueError('x coordinates must lie between the fixed leading and trailing edges')
     xi = torch.clamp(x, util.AIRFOIL_LEADING_EDGE_X, util.AIRFOIL_TRAILING_EDGE_X)
-    basis = _bernstein_basis(xi, util.CST_SURFACE_SHAPE_COEFFICIENTS)
+    basis = _bernstein_basis(xi, shape_coefficient_count)
     class_function = (
         xi ** class_function_n1
         * (1.0 - xi) ** class_function_n2
@@ -297,9 +254,19 @@ def _class_shape_y(shape_coefficients, trailing_edge_y, class_function_n1, class
     return xi * trailing_edge_y + class_function * shape_function
 
 
-def _decode_at_x(upper_shape, lower_shape, upper_te_y, lower_te_y, class_function_n1, class_function_n2, upper_x, lower_x):
-    upper_y = _class_shape_y(upper_shape, upper_te_y, class_function_n1, class_function_n2, upper_x)
-    lower_y = _class_shape_y(lower_shape, lower_te_y, class_function_n1, class_function_n2, lower_x)
+def _decode_at_x(
+        upper_shape, lower_shape, trailing_edge_thickness, class_function_n1,
+        class_function_n2, upper_x, lower_x, shape_coefficient_count):
+    upper_te_y = 0.5 * trailing_edge_thickness
+    lower_te_y = -upper_te_y
+    upper_y = _class_shape_y(
+        upper_shape, upper_te_y, class_function_n1, class_function_n2, upper_x,
+        shape_coefficient_count
+    )
+    lower_y = _class_shape_y(
+        lower_shape, lower_te_y, class_function_n1, class_function_n2, lower_x,
+        shape_coefficient_count
+    )
     upper_curve = torch.stack([upper_x, upper_y], dim=2)
     lower_curve = torch.stack([lower_x, lower_y], dim=2)
     return torch.cat([upper_curve, lower_curve[:, 1:, :]], dim=1)
@@ -315,41 +282,45 @@ def _sampling_x_values(num_output_points, device, dtype):
     )
 
 
-def decode_cst_airfoil_code(code, num_output_points=util.AIRFOIL_DEFAULT_OUTPUT_POINTS):
+def decode_cst_airfoil_code(
+        code, num_output_points=util.AIRFOIL_DEFAULT_OUTPUT_POINTS,
+        shape_coefficient_count=None):
     if num_output_points < 3:
         raise ValueError(f'num_output_points must be at least 3, got {num_output_points}')
-    code_tensor, _ = _as_batched_code(code)
-    unpacked = unpack_cst_airfoil_code(code_tensor)
+    coefficient_count = resolve_shape_coefficient_count(shape_coefficient_count)
+    code_tensor, _ = _as_batched_code(code, coefficient_count)
+    unpacked = unpack_cst_airfoil_code(code_tensor, coefficient_count)
     upper_x, lower_x = _sampling_x_values(num_output_points, code_tensor.device, code_tensor.dtype)
     upper_x = upper_x.expand(code_tensor.size(0), -1)
     lower_x = lower_x.expand(code_tensor.size(0), -1)
     return _decode_at_x(
-        unpacked['upper']['shape_coefficients'],
-        unpacked['lower']['shape_coefficients'],
-        unpacked['upper']['trailing_edge_y'],
-        unpacked['lower']['trailing_edge_y'],
+        unpacked['upper_shape_coefficients'],
+        unpacked['lower_shape_coefficients'],
+        unpacked['trailing_edge_thickness'],
         unpacked['class_function_n1'],
         unpacked['class_function_n2'],
         upper_x,
         lower_x,
+        coefficient_count,
     )
 
 
-def symmetric_airfoil_code_from_upper(airfoil_code, symmetry_line_y):
+def symmetric_airfoil_code_from_upper(
+        airfoil_code, symmetry_line_y, shape_coefficient_count=None):
     if symmetry_line_y != 0.0:
         raise ValueError(
             'fixed-leading-edge CST can only mirror about '
             f'y={0.0}, got {symmetry_line_y}'
         )
-    unpacked = unpack_cst_airfoil_code(airfoil_code)
-    upper = unpacked['upper']
+    coefficient_count = resolve_shape_coefficient_count(shape_coefficient_count)
+    unpacked = unpack_cst_airfoil_code(airfoil_code, coefficient_count)
     return pack_cst_airfoil_code(
-        upper['shape_coefficients'],
-        -upper['shape_coefficients'],
-        upper['trailing_edge_y'],
-        -upper['trailing_edge_y'],
+        unpacked['upper_shape_coefficients'],
+        -unpacked['upper_shape_coefficients'],
+        unpacked['trailing_edge_thickness'],
         unpacked['class_function_n1'],
         unpacked['class_function_n2'],
+        coefficient_count,
     )
 
 
@@ -381,60 +352,66 @@ def _validate_target_points(points):
         raise ValueError(f'upper trailing-edge x must equal {util.AIRFOIL_TRAILING_EDGE_X}')
     if not torch.isclose(points[-1, 0], torch.tensor(util.AIRFOIL_TRAILING_EDGE_X, dtype=points.dtype)):
         raise ValueError(f'lower trailing-edge x must equal {util.AIRFOIL_TRAILING_EDGE_X}')
+    trailing_edge_midpoint_y = 0.5 * (points[0, 1] + points[-1, 1])
+    if not torch.isclose(trailing_edge_midpoint_y, torch.tensor(0.0, dtype=points.dtype), atol=1e-6, rtol=0.0):
+        raise ValueError('raw_points trailing-edge midpoint y must equal 0.0')
     return leading_edge_index
 
 
-def fit_airfoil_points(raw_points, fit_config, device=None, verbose=False):
-    validate_fit_config(fit_config)
+def fit_airfoil_points(
+        raw_points, device=None, verbose=False, shape_coefficient_count=None):
+    coefficient_count = resolve_shape_coefficient_count(shape_coefficient_count)
     points = torch.as_tensor(raw_points, dtype=torch.float32)
     leading_edge_index = _validate_target_points(points)
     target_points = points.unsqueeze(0).to(torch.device('cpu') if device is None else torch.device(device))
     upper_x = target_points[:, :leading_edge_index + 1, 0]
     lower_x = target_points[:, leading_edge_index:, 0]
-    upper_te_y = torch.nn.Parameter(target_points[:, 0:1, 1].clone())
-    lower_te_y = torch.nn.Parameter(target_points[:, -1:, 1].clone())
-    shape_parameter_shape = (1, util.CST_SURFACE_SHAPE_COEFFICIENTS)
+    trailing_edge_thickness = torch.nn.Parameter(
+        target_points[:, 0:1, 1] - target_points[:, -1:, 1]
+    )
+    shape_parameter_shape = (1, coefficient_count)
     upper_shape = torch.nn.Parameter(torch.zeros(shape_parameter_shape, device=target_points.device))
     lower_shape = torch.nn.Parameter(torch.zeros(shape_parameter_shape, device=target_points.device))
-    minimum_exponent = fit_config['minimum_class_function_exponent']
-    initial_n1 = torch.tensor(fit_config['initial_n1'] - minimum_exponent)
-    initial_n2 = torch.tensor(fit_config['initial_n2'] - minimum_exponent)
+    minimum_exponent = util.CST_FIT_CONFIG['minimum_class_function_exponent']
+    initial_n1 = torch.tensor(util.CST_FIT_CONFIG['initial_n1'] - minimum_exponent)
+    initial_n2 = torch.tensor(util.CST_FIT_CONFIG['initial_n2'] - minimum_exponent)
     raw_n1 = torch.nn.Parameter(torch.log(torch.expm1(initial_n1)).reshape(1, 1).to(target_points.device))
     raw_n2 = torch.nn.Parameter(torch.log(torch.expm1(initial_n2)).reshape(1, 1).to(target_points.device))
     optimizer = optim.Adam(
-        [upper_shape, lower_shape, upper_te_y, lower_te_y, raw_n1, raw_n2], lr=fit_config['lr']
+        [upper_shape, lower_shape, trailing_edge_thickness, raw_n1, raw_n2],
+        lr=util.CST_FIT_CONFIG['lr'],
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        patience=fit_config['scheduler_patience'],
-        factor=fit_config['scheduler_factor'],
+        patience=util.CST_FIT_CONFIG['scheduler_patience'],
+        factor=util.CST_FIT_CONFIG['scheduler_factor'],
     )
     leading_edge_weights = cosine_leading_edge_weights(
         target_points,
-        fit_config['leading_edge_window'],
-        fit_config['leading_edge_weight_amplitude'],
+        util.CST_FIT_CONFIG['leading_edge_window'],
+        util.CST_FIT_CONFIG['leading_edge_weight_amplitude'],
     )
-    for iteration in range(fit_config['iterations']):
+    for iteration in range(util.CST_FIT_CONFIG['iterations']):
         optimizer.zero_grad()
         class_function_n1 = minimum_exponent + functional.softplus(raw_n1)
         class_function_n2 = minimum_exponent + functional.softplus(raw_n2)
         curve = _decode_at_x(
-            upper_shape, lower_shape, upper_te_y, lower_te_y,
-            class_function_n1, class_function_n2, upper_x, lower_x
+            upper_shape, lower_shape, trailing_edge_thickness,
+            class_function_n1, class_function_n2, upper_x, lower_x, coefficient_count
         )
         fit_loss = torch.sum(
             weighted_mae_per_airfoil(curve, target_points, leading_edge_weights)
-        ) * fit_config['loss_scale']
+        ) * util.CST_FIT_CONFIG['loss_scale']
         regularization = (
             torch.mean(upper_shape ** 2) + torch.mean(lower_shape ** 2)
-        ) * fit_config['coefficient_reg']
+        ) * util.CST_FIT_CONFIG['coefficient_reg']
         total_loss = fit_loss + regularization
         total_loss.backward()
         optimizer.step()
         scheduler.step(total_loss.item())
         if verbose and (
-                iteration % fit_config['log_interval'] == 0
-                or iteration == fit_config['iterations'] - 1):
+                iteration % util.CST_FIT_CONFIG['log_interval'] == 0
+                or iteration == util.CST_FIT_CONFIG['iterations'] - 1):
             print(
                 f'Iter {iteration}, Total: {total_loss.item():.6f}, '
                 f'Weighted MAE: {fit_loss.item():.6f}, Reg: {regularization.item():.6f}'
@@ -443,11 +420,12 @@ def fit_airfoil_points(raw_points, fit_config, device=None, verbose=False):
         class_function_n1 = minimum_exponent + functional.softplus(raw_n1)
         class_function_n2 = minimum_exponent + functional.softplus(raw_n2)
         curve = _decode_at_x(
-            upper_shape, lower_shape, upper_te_y, lower_te_y,
-            class_function_n1, class_function_n2, upper_x, lower_x
+            upper_shape, lower_shape, trailing_edge_thickness,
+            class_function_n1, class_function_n2, upper_x, lower_x, coefficient_count
         )
         code = pack_cst_airfoil_code(
-            upper_shape, lower_shape, upper_te_y, lower_te_y, class_function_n1, class_function_n2
+            upper_shape, lower_shape, trailing_edge_thickness, class_function_n1,
+            class_function_n2, coefficient_count
         ).squeeze(0)
         mae_value = torch.mean(torch.abs(curve - target_points)).detach().cpu().item()
         mse_value = torch.mean((curve - target_points) ** 2).detach().cpu().item()
@@ -459,18 +437,28 @@ def fit_airfoil_points(raw_points, fit_config, device=None, verbose=False):
         'leading_edge': torch.tensor([util.AIRFOIL_LEADING_EDGE_X, 0.0]),
         'class_function_n1': class_function_n1.squeeze(0).detach().cpu(),
         'class_function_n2': class_function_n2.squeeze(0).detach().cpu(),
+        'shape_coefficient_count': coefficient_count,
         'mae': float(mae_value),
         'mse': float(mse_value),
         'max_point_error': float(max_point_error.detach().cpu().item()),
     }
 
 
-def encode_airfoil_dat(dat_path, fit_config, device=None, verbose=False):
-    return fit_airfoil_points(load_dat(dat_path), fit_config, device=device, verbose=verbose)
+def encode_airfoil_dat(
+        dat_path, device=None, verbose=False, shape_coefficient_count=None):
+    return fit_airfoil_points(
+        load_dat(dat_path), device=device, verbose=verbose,
+        shape_coefficient_count=shape_coefficient_count
+    )
 
 
-def encode_processed_airfoil_dat(dat_path, device=None, verbose=False):
-    result = encode_airfoil_dat(dat_path, cst_fit_config(), device=device, verbose=verbose)
+def encode_processed_airfoil_dat(
+        dat_path, device=None, verbose=False, shape_coefficient_count=None):
+    coefficient_count = resolve_shape_coefficient_count(shape_coefficient_count)
+    result = encode_airfoil_dat(
+        dat_path, device=device, verbose=verbose,
+        shape_coefficient_count=coefficient_count
+    )
     result['source_airfoil'] = str(Path(dat_path).resolve())
     result['fit_config'] = cst_fit_config()
     result['device'] = str(torch.device('cpu') if device is None else torch.device(device))
@@ -479,7 +467,8 @@ def encode_processed_airfoil_dat(dat_path, device=None, verbose=False):
         'mse': result['mse'],
         'max_point_error': result['max_point_error'],
         **leading_edge_error_metrics(
-            result['curve'], result['target_points'], result['fit_config']['leading_edge_window']
+            result['curve'], result['target_points'],
+            util.CST_FIT_CONFIG['leading_edge_window']
         ),
     }
     return result

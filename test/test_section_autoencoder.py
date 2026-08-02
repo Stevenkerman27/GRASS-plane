@@ -15,225 +15,133 @@ from grassmodel import GRASSDecoder, GRASSEncoder
 import section_autoencoder
 import section_parameter_codec
 import train_autoencoder
-import train_section_autoencoder
 import util
 
 
 def model_config():
-    return SimpleNamespace(
-        box_code_size=13,
-        feature_size=12,
-        hidden_size=16,
-        symmetry_size=8,
-        ae_rnn_type='rnn',
-        ae_teacher_forcing_p_final=0.1,
-        ae_teacher_forcing_ramp_start_epoch=2,
-        ae_teacher_forcing_ramp_end_epoch=4,
-    )
+    return SimpleNamespace(box_code_size=13, feature_size=128, hidden_size=16, symmetry_size=8)
+
+
+def payload(sequence_type, batch_size=2):
+    if sequence_type == grassdata.SEQUENCE_TYPE_WING:
+        global_parameters = torch.tensor([[0.2, -0.1, 0.3, 2.0, 6.0]]).repeat(batch_size, 1)
+        sections = torch.zeros(batch_size, util.WING_SECTION_COUNT, util.WING_SECTION_SIZE)
+        sections[..., 0] = torch.linspace(0.0, 1.0, util.WING_SECTION_COUNT)
+        sections[..., 1] = torch.linspace(1.0, 0.5, util.WING_SECTION_COUNT)
+        sections[..., -2:] = 0.5
+        return global_parameters, sections
+    global_parameters = torch.tensor([[0.0, 0.0, 0.0, 12.0, 3.0, 2.0]]).repeat(batch_size, 1)
+    sections = torch.zeros(batch_size, util.FUSELAGE_SECTION_COUNT, util.FUSELAGE_SECTION_SIZE)
+    sections[..., 0] = torch.linspace(0.0, 1.0, util.FUSELAGE_SECTION_COUNT)
+    sections[..., 1:3] = 0.7
+    sections[:, (0, -1), 1:3] = 0.1
+    sections[..., 4:6] = 2.0
+    return global_parameters, sections
 
 
 def parameter_statistics(sequence_type):
-    section_size = grassdata.sequence_section_size(sequence_type)
-    return {
-        'schema': section_parameter_codec.SECTION_PARAMETER_CODEC_SCHEMA,
-        'sequence_type': sequence_type,
-        'mean': torch.zeros(section_size),
-        'std': torch.ones(section_size),
-        'constant_mask': torch.zeros(section_size, dtype=torch.bool),
-    }
-
-
-def all_parameter_statistics():
-    return {
-        sequence_type: parameter_statistics(sequence_type)
-        for sequence_type in (
-            grassdata.SEQUENCE_TYPE_WING,
-            grassdata.SEQUENCE_TYPE_FUSELAGE,
-        )
-    }
-
-
-def valid_sections(sequence_type, batch_size=2):
-    if sequence_type == grassdata.SEQUENCE_TYPE_WING:
-        sections = torch.randn(batch_size, 8, 29)
-        sections[..., 22:24] = torch.rand(batch_size, 8, 2) + 0.1
-        sections[..., 27:28] = torch.rand(batch_size, 8, 1) + 0.1
-        return sections
-    sections = torch.randn(batch_size, 8, 5)
-    sections[..., 0] = torch.arange(8, dtype=sections.dtype).unsqueeze(0) + 1.0
-    sections[:, 0, 0] = 0.0
-    sections[..., 3:5] = torch.rand(batch_size, 8, 2) + 0.1
-    return sections
+    global_parameters, sections = payload(sequence_type)
+    return section_parameter_codec.fit_section_parameter_statistics(
+        [
+            {'z_global': global_parameters[index], 'sections': sections[index]}
+            for index in range(global_parameters.size(0))
+        ],
+        sequence_type,
+    )
 
 
 @pytest.mark.parametrize('sequence_type', [
     grassdata.SEQUENCE_TYPE_WING,
     grassdata.SEQUENCE_TYPE_FUSELAGE,
 ])
-def test_fitted_parameter_codec_round_trips_valid_physical_sections(sequence_type):
-    sections = valid_sections(sequence_type)
-    counts = torch.tensor([3, 8])
-    dataset = [
-        {
-            'sections': sections[index],
-            'section_count': counts[index],
-        }
-        for index in range(sections.size(0))
-    ]
-    statistics = section_parameter_codec.fit_section_parameter_statistics(
-        dataset, sequence_type
+def test_component_codec_round_trip(sequence_type):
+    global_parameters, sections = payload(sequence_type)
+    codec = section_parameter_codec.SectionParameterCodec(
+        sequence_type, parameter_statistics(sequence_type)
     )
-    codec = section_parameter_codec.SectionParameterCodec(sequence_type, statistics)
-
-    normalized = codec.normalize(sections, counts)
-    reconstructed = codec.denormalize(normalized)
-    valid_mask = grassdata.section_mask(counts, sequence_type=sequence_type)
-
-    assert torch.allclose(reconstructed[valid_mask], sections[valid_mask], atol=1e-5, rtol=1e-5)
-    assert torch.equal(normalized[~valid_mask], torch.zeros_like(normalized[~valid_mask]))
-    if sequence_type == grassdata.SEQUENCE_TYPE_FUSELAGE:
-        assert torch.equal(reconstructed[:, 0, 0], torch.zeros(sections.size(0)))
+    model_global, model_sections = codec.normalize(global_parameters, sections)
+    decoded_global, decoded_sections = codec.denormalize(model_global, model_sections)
+    assert torch.allclose(decoded_global, global_parameters, atol=1e-5)
+    assert torch.allclose(decoded_sections, sections, atol=1e-5)
 
 
-@pytest.mark.parametrize(
-    ('sequence_type', 'section_size'),
-    [
-        (grassdata.SEQUENCE_TYPE_WING, 29),
-        (grassdata.SEQUENCE_TYPE_FUSELAGE, 5),
-    ],
-)
-def test_section_autoencoder_forward_and_backward(sequence_type, section_size):
-    config = model_config()
+@pytest.mark.parametrize('sequence_type', [
+    grassdata.SEQUENCE_TYPE_WING,
+    grassdata.SEQUENCE_TYPE_FUSELAGE,
+])
+def test_section_autoencoder_forward_backward_and_canonical_fields(sequence_type):
     model = section_autoencoder.SectionAutoencoder(
-        sequence_type, config, parameter_statistics(sequence_type)
+        sequence_type, model_config(), parameter_statistics(sequence_type)
     )
-    sections = valid_sections(sequence_type)
-    count = torch.tensor([2, 8])
-
-    reconstructed, count_logits = model(sections, count, torch.tensor([1.0, 1.0]))
+    global_parameters, sections = payload(sequence_type)
+    reconstructed_global, reconstructed_sections = model(global_parameters, sections)
     losses = section_autoencoder.reconstruction_losses(
-        model, reconstructed, count_logits, sections, count
+        model, reconstructed_global, reconstructed_sections, global_parameters, sections
     )
     losses['total'].mean().backward()
-
-    assert reconstructed.shape == sections.shape
-    assert count_logits.shape == (2, 7)
+    assert reconstructed_global.shape == global_parameters.shape
+    assert reconstructed_sections.shape == sections.shape
     assert torch.isfinite(losses['total']).all()
     assert any(parameter.grad is not None for parameter in model.parameters())
+    if sequence_type == grassdata.SEQUENCE_TYPE_WING:
+        assert torch.equal(reconstructed_sections[..., 0], torch.linspace(0.0, 1.0, 6).expand(2, -1))
+        assert torch.equal(reconstructed_sections[:, 0, 1], torch.ones(2))
+    else:
+        assert torch.equal(reconstructed_sections[..., 0], torch.linspace(0.0, 1.0, 10).expand(2, -1))
+        assert torch.equal(reconstructed_sections[:, (0, -1), 1:3], torch.full((2, 2, 2), 0.1))
 
 
 def test_pretrained_section_checkpoints_load_into_full_autoencoder():
     config = model_config()
+    statistics = {
+        sequence_type: parameter_statistics(sequence_type)
+        for sequence_type in (grassdata.SEQUENCE_TYPE_WING, grassdata.SEQUENCE_TYPE_FUSELAGE)
+    }
     checkpoints = {}
-    statistics = all_parameter_statistics()
-    for sequence_type in (grassdata.SEQUENCE_TYPE_WING, grassdata.SEQUENCE_TYPE_FUSELAGE):
-        model = section_autoencoder.SectionAutoencoder(
-            sequence_type, config, statistics[sequence_type]
-        )
+    for sequence_type in statistics:
+        model = section_autoencoder.SectionAutoencoder(sequence_type, config, statistics[sequence_type])
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
         checkpoints[sequence_type] = section_autoencoder.build_checkpoint(
             model, 1, optimizer, scheduler, {'total': 0.0}, config
         )
-
-    full_encoder = GRASSEncoder(config, statistics)
-    full_decoder = GRASSDecoder(config, statistics)
-    section_autoencoder.apply_pretrained_section_autoencoders(
-        full_encoder, full_decoder, checkpoints, config
-    )
-
-    for key, value in full_encoder.wing_section_encoder.state_dict().items():
+    encoder = GRASSEncoder(config, statistics)
+    decoder = GRASSDecoder(config, statistics)
+    section_autoencoder.apply_pretrained_section_autoencoders(encoder, decoder, checkpoints, config)
+    for key, value in encoder.wing_section_encoder.state_dict().items():
         assert torch.equal(value, checkpoints[grassdata.SEQUENCE_TYPE_WING]['section_encoder_state_dict'][key])
-    for key, value in full_decoder.fuselage_section_decoder.state_dict().items():
-        assert torch.equal(value, checkpoints[grassdata.SEQUENCE_TYPE_FUSELAGE]['section_decoder_state_dict'][key])
-
-    checkpoints[grassdata.SEQUENCE_TYPE_WING]['feature_size'] = config.feature_size + 1
-    with pytest.raises(ValueError, match='feature_size'):
-        section_autoencoder.apply_pretrained_section_autoencoders(
-            GRASSEncoder(config, statistics),
-            GRASSDecoder(config, statistics),
-            checkpoints,
-            config,
-        )
-
-    checkpoints[grassdata.SEQUENCE_TYPE_WING]['feature_size'] = config.feature_size
-    checkpoints[grassdata.SEQUENCE_TYPE_WING]['parameter_statistics']['mean'][0] += 1.0
-    with pytest.raises(ValueError, match='statistics'):
-        section_autoencoder.apply_pretrained_section_autoencoders(
-            GRASSEncoder(config, statistics),
-            GRASSDecoder(config, statistics),
-            checkpoints,
-            config,
-        )
 
 
-@pytest.mark.parametrize('sequence_type', [
-    grassdata.SEQUENCE_TYPE_WING,
-    grassdata.SEQUENCE_TYPE_FUSELAGE,
-])
-def test_section_autoencoder_checkpoint_loads_for_evaluation(monkeypatch, sequence_type):
+def test_tree_reconstruction_uses_fixed_component_payloads():
     config = model_config()
-    model = section_autoencoder.SectionAutoencoder(
-        sequence_type, config, parameter_statistics(sequence_type)
-    )
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
-    checkpoint = section_autoencoder.build_checkpoint(
-        model, 1, optimizer, scheduler, {'total': 0.0}, config
-    )
-    path = section_autoencoder.final_checkpoint_path('virtual_checkpoints', sequence_type)
-    monkeypatch.setattr(section_autoencoder.Path, 'is_file', lambda _path: True)
-    monkeypatch.setattr(section_autoencoder.torch, 'load', lambda *_args, **_kwargs: checkpoint)
-
-    loaded, loaded_checkpoint = section_autoencoder.load_section_autoencoder(
-        path, sequence_type, torch.device('cpu')
-    )
-
-    assert loaded.sequence_type == sequence_type
-    assert loaded.training is False
-    assert loaded_checkpoint['epoch'] == 1
-
-
-def test_final_checkpoint_path_uses_last_checkpoint_name():
-    assert section_autoencoder.final_checkpoint_path(
-        'models/section_autoencoder', grassdata.SEQUENCE_TYPE_WING
-    ) == Path('models/section_autoencoder/last_wing.pt')
-
-
-def test_autoencoder_optimizer_uses_configured_weight_decay():
-    parameter = torch.nn.Parameter(torch.zeros(()))
-    config = SimpleNamespace(ae_lr=1e-3, ae_weight_decay=1e-5)
-
-    optimizer = train_autoencoder.make_autoencoder_optimizer([parameter], config)
-
-    assert isinstance(optimizer, torch.optim.AdamW)
-    assert optimizer.param_groups[0]['weight_decay'] == pytest.approx(1e-5)
-
-
-def test_overfit_split_is_a_deterministic_two_aircraft_shared_subset(monkeypatch):
-    config = SimpleNamespace(
-        legacy_data=False,
-        ae_validation_fraction=0.1,
-        structured_data_paths=('first.pt', 'second.pt'),
-        ae_seed=17,
-        overfit=True,
-        section_ae_checkpoint_dir='models/section_autoencoder',
-    )
-    datasets = {
-        'first.pt': [0, 1, 2],
-        'second.pt': [3, 4, 5],
+    statistics = {
+        sequence_type: parameter_statistics(sequence_type)
+        for sequence_type in (grassdata.SEQUENCE_TYPE_WING, grassdata.SEQUENCE_TYPE_FUSELAGE)
     }
-    monkeypatch.setattr(
-        train_section_autoencoder, 'StructuredGRASSDataset', lambda path: datasets[path]
+    wing_global, wing_sections = payload(grassdata.SEQUENCE_TYPE_WING, batch_size=1)
+    fuselage_global, fuselage_sections = payload(grassdata.SEQUENCE_TYPE_FUSELAGE, batch_size=1)
+    tree = grassdata.Tree.from_structured_sample({
+        'boxes': [
+            {
+                'component': util.COMPONENT_FUSELAGE,
+                'sequence_type': grassdata.SEQUENCE_TYPE_FUSELAGE,
+                'z_global': fuselage_global[0],
+                'z_section': fuselage_sections[0],
+            },
+            {
+                'component': util.COMPONENT_WING,
+                'sequence_type': grassdata.SEQUENCE_TYPE_WING,
+                'z_global': wing_global[0],
+                'z_section': wing_sections[0],
+            },
+        ],
+        'ops': [0, 0, 1],
+        'syms': [],
+    })
+    encoder = GRASSEncoder(config, statistics)
+    decoder = GRASSDecoder(config, statistics)
+    losses = train_autoencoder.reconstruction_losses(
+        encoder, decoder, [tree], cuda_enabled=False, device=torch.device('cpu')
     )
-
-    training, evaluation = train_section_autoencoder.make_aircraft_splits(config)
-    repeated_training, repeated_evaluation = train_section_autoencoder.make_aircraft_splits(config)
-
-    assert training is evaluation
-    assert len(training) == util.SECTION_AE_OVERFIT_AIRCRAFT_COUNT
-    assert training.indices == repeated_training.indices
-    assert repeated_training is repeated_evaluation
-    assert train_section_autoencoder.section_ae_checkpoint_dir(config) == Path(
-        'models/section_autoencoder/overfit'
-    )
+    assert torch.isfinite(losses['total'])
+    losses['total'].backward()

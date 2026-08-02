@@ -1,7 +1,6 @@
 Chinese character involved in this project, mind encoding!
 使用myml python环境,位于C:\Users\zyx20\anaconda3\envs\myml. Xfoil 在D:\software\XFOIL6.99
 Grass-matlab中是作者的原始matlab实现，禁止修改，鼓励查询并参考
-mistakes部分中记录了过去常犯的错误，必须阅读保证不再犯错。如果有新的frequent mistake同样记录在mistakes部分中
 
 在开始较复杂的非只读任务前，向用户询问详细的技术细节。完成和用户的alignment后寻求用户同意，并在docs文件夹中写入/修改对应模块的.md定义文件。保持定义简洁
 
@@ -17,7 +16,3 @@ mistakes部分中记录了过去常犯的错误，必须阅读保证不再犯错
 5. 严禁把生成产物写到项目文件夹之外
 
 6. 代码确保可直接无参数运行，如有参数参数字段必须短
-
-
-mistakes:
-- 对同一几何数据完成坐标变换后，写出和后续计算必须只使用变换后的单一数组；禁止保留并误用变换前的平行坐标数组。

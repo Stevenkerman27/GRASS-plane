@@ -15,8 +15,8 @@ DATASET_SAMPLE_COUNT = 400
 BOX_OP = 0
 ADJ_OP = 1
 SYM_OP = 2
-GEOMETRY_SCHEMA = "flying_wing_variable_layout_v2"
-TOPOLOGY_NAME = "symmetric_flying_wing_fuselage_sequence_v1"
+GEOMETRY_SCHEMA = "flying_wing_global_section_v1"
+TOPOLOGY_NAME = "symmetric_flying_wing_fuselage_global_section_v1"
 LENGTH_UNIT = "m"
 MAX_WINGSPAN = 1.0
 TESS_INT = 0.025
@@ -26,20 +26,26 @@ TESS_INT = 0.025
 FUSELAGE_LENGTH_RANGE = (0.5, 1.0)
 FUSELAGE_WIDTH_RANGE = (0.09, 0.16)
 FUSELAGE_HEIGHT_RANGE = (0.10, 0.18)
-FUSELAGE_STATION_FRACTION_RANGES = ((0.00, 0.00), (0.10, 0.22), (0.68, 0.85), (1.00, 1.00))
-FUSELAGE_WIDTH_RATIO_RANGES = ((0.30, 0.55), (0.90, 1.25), (0.90, 1.25), (0.30, 0.60))
-FUSELAGE_HEIGHT_RATIO_RANGES = ((0.30, 0.60), (0.85, 1.15), (0.85, 1.15), (0.30, 0.65))
-# Twist configuration is expressed in degrees; section payloads remain radians.
-WING_ROOT_TWIST_DEG_RANGE = (-2.0, 5.0)
-WING_TIP_TWIST_DEG_RANGE = (-2.0, 5.0)
+FUSELAGE_END_SECTION_SCALE = 0.10
+FUSELAGE_INTERIOR_SECTION_SCALE_RANGE = (0.60, 1.00)
+FUSELAGE_SUPER_MAX_WIDTH_LOC_RANGE = (-0.7, 0.7)
+FUSELAGE_SUPER_M_RANGE = (1.0, 8.0)
+FUSELAGE_SUPER_N_RANGE = (1.0, 8.0)
+FUSELAGE_SUPER_MAX_WIDTH_LOC_MAX_DELTA = 0.2
+FUSELAGE_SUPER_M_MAX_DELTA = 2.0
+FUSELAGE_SUPER_N_MAX_DELTA = 2.0
+WING_TWIST_DEG_RANGE = (-5.0, 5.0)
+WING_TWIST_MAX_ADJACENT_DELTA_DEG = 2.0
+WING_CHORD_JITTER_FRACTION = 0.10
+WING_SWEEP_JITTER_FRACTION = 0.10
 WING_ROOT_LEADING_EDGE_X_FRACTION_RANGE = (0.25, 0.48)
-WING_TIP_LEADING_EDGE_Z_RANGE = (-0.04, 0.10)
+WING_TIP_LEADING_EDGE_Z_DELTA_RANGE = (-0.04, 0.10)
 WING_ROOT_CHORD_RANGE = (0.18, 0.32)
 WING_CHORD_RANGE = (0.04, 0.36)
 WING_TIP_QUARTER_CHORD_X_DELTA_RANGE = (-0.06, 0.50)
 # The quadratic constant terms are zero because both curves are root-relative:
 # x_25(eta) = x_25_root + a_x eta^2 + b_x eta and likewise for chord.
-WING_QUARTER_CHORD_A_RANGE = (0.0, 0.70)
+WING_QUARTER_CHORD_A_RANGE = (-0.2, 0.70)
 WING_QUARTER_CHORD_B_RANGE = (-0.45, 0.45)
 WING_CHORD_A_RANGE = (0.0, 0.45)
 WING_CHORD_VERTEX_FRACTION_RANGE = (0.5, 1.5)
@@ -49,6 +55,11 @@ WING_COMPONENTS = ("main_wing_right",)
 MIRROR_Y_SYM = [1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ROUND_CAP_PARM_NAMES = ("CapUMinOption", "CapUMaxOption")
 ROUND_CAP_GROUP = "EndCap"
+SUPER_ELLIPSE_PARAMETERS = (
+    ("Super_MaxWidthLoc", FUSELAGE_SUPER_MAX_WIDTH_LOC_RANGE, FUSELAGE_SUPER_MAX_WIDTH_LOC_MAX_DELTA),
+    ("Super_M", FUSELAGE_SUPER_M_RANGE, FUSELAGE_SUPER_M_MAX_DELTA),
+    ("Super_N", FUSELAGE_SUPER_N_RANGE, FUSELAGE_SUPER_N_MAX_DELTA),
+)
 
 class TreeAssembler:
     """Postorder GRASS tree builder whose box order is the JSON component order."""
@@ -71,55 +82,161 @@ class TreeAssembler:
 
 
 def sample_fuselage_xsecs(rng, length, width, height):
-    count = rng.randint(*util.SECTION_COUNT_RANGE)
-    anchor_count = len(FUSELAGE_STATION_FRACTION_RANGES)
+    count = util.FUSELAGE_SECTION_COUNT
 
-    def interpolated_range(ranges, fraction):
-        scaled = fraction * (anchor_count - 1)
-        left_index = min(int(scaled), anchor_count - 2)
-        weight = scaled - left_index
-        left = ranges[left_index]
-        right = ranges[left_index + 1]
-        return (
-            _interpolate_scalar(left[0], right[0], weight),
-            _interpolate_scalar(left[1], right[1], weight),
+    parameter_rows = sample_super_ellipse_parameter_rows(rng, count)
+    xsecs = []
+    for index in range(count):
+        fraction = index / (count - 1)
+        if index in (0, count - 1):
+            width_scale = FUSELAGE_END_SECTION_SCALE
+            height_scale = FUSELAGE_END_SECTION_SCALE
+        else:
+            width_scale = rng.uniform(*FUSELAGE_INTERIOR_SECTION_SCALE_RANGE)
+            height_scale = rng.uniform(*FUSELAGE_INTERIOR_SECTION_SCALE_RANGE)
+        xsecs.append({
+            "x": length * fraction,
+            "z": 0.0,
+            "width": width * width_scale,
+            "height": height * height_scale,
+            **parameter_rows[index],
+        })
+    return xsecs
+
+
+def _sample_bounded_sequence(rng, count, value_range, maximum_delta):
+    values = [rng.uniform(*value_range)]
+    for _ in range(1, count):
+        lower = max(value_range[0], values[-1] - maximum_delta)
+        upper = min(value_range[1], values[-1] + maximum_delta)
+        values.append(rng.uniform(lower, upper))
+    return values
+
+
+def configure_wing_section_jitter(rng, plan):
+    count = plan['section_count']
+    if count != util.WING_SECTION_COUNT:
+        raise ValueError(f'wing section count must be {util.WING_SECTION_COUNT}, got {count}')
+    base_chords = [
+        evaluate_root_relative_quadratic(
+            plan['root_chord'], plan['chord_a'], plan['chord_b'], index / (count - 1)
         )
-
-    for _ in range(WING_PLAN_SAMPLING_ATTEMPTS):
-        xsecs = []
-        for index in range(count):
-            fraction = index / (count - 1)
-            station_range = interpolated_range(FUSELAGE_STATION_FRACTION_RANGES, fraction)
-            width_range = interpolated_range(FUSELAGE_WIDTH_RATIO_RANGES, fraction)
-            height_range = interpolated_range(FUSELAGE_HEIGHT_RATIO_RANGES, fraction)
-            xsecs.append({
-                "x": length * rng.uniform(*station_range),
-                "width": width * rng.uniform(*width_range),
-                "height": height * rng.uniform(*height_range),
-            })
-        if all(start["x"] < end["x"] for start, end in zip(xsecs[:-1], xsecs[1:], strict=True)):
-            return xsecs
-    raise RuntimeError("Unable to sample strictly increasing fuselage stations")
-
-
-def build_fuselage_sections(fuselage_xsecs):
-    return [
-        [xsec["x"], 0.0, 0.0, xsec["width"], xsec["height"]]
-        for xsec in fuselage_xsecs
+        for index in range(count)
+    ]
+    minimum_factor = 1.0 - WING_CHORD_JITTER_FRACTION
+    maximum_factor = 1.0 + WING_CHORD_JITTER_FRACTION
+    chord_factors = [1.0]
+    for chord in base_chords[1:]:
+        lower = max(minimum_factor, WING_CHORD_RANGE[0] / chord)
+        upper = min(
+            maximum_factor,
+            base_chords[0] / chord,
+            WING_CHORD_RANGE[1] / chord,
+        )
+        if upper < lower:
+            raise RuntimeError('Unable to apply chord jitter within normalized chord bounds')
+        chord_factors.append(rng.uniform(lower, upper))
+    plan['chord_jitter_factors'] = chord_factors
+    plan['sweep_jitter_factors'] = [1.0] + [
+        rng.uniform(1.0 - WING_SWEEP_JITTER_FRACTION, 1.0 + WING_SWEEP_JITTER_FRACTION)
+        for _ in range(1, count)
     ]
 
 
-def _sample_section_count(rng):
-    return rng.randint(*util.SECTION_COUNT_RANGE)
+def sample_super_ellipse_parameter_rows(rng, count):
+    if count < 1:
+        raise ValueError(f'super-ellipse station count must be positive, got {count}')
+    values = {
+        name: _sample_bounded_sequence(rng, count, value_range, maximum_delta)
+        for name, value_range, maximum_delta in SUPER_ELLIPSE_PARAMETERS
+    }
+    return [
+        {name: parameter_values[index] for name, parameter_values in values.items()}
+        for index in range(count)
+    ]
+
+
+def build_fuselage_latent(fuselage_xsecs, length, width, height):
+    if len(fuselage_xsecs) != util.FUSELAGE_SECTION_COUNT:
+        raise ValueError('fuselage must use the configured fixed station count')
+    return {
+        'z_global': [0.0, 0.0, 0.0, length, width, height],
+        'z_section': [
+            [
+                xsec['x'] / length,
+                xsec['width'] / width,
+                xsec['height'] / height,
+                xsec['Super_MaxWidthLoc'],
+                xsec['Super_M'],
+                xsec['Super_N'],
+            ]
+            for xsec in fuselage_xsecs
+        ],
+    }
+
+
+def sample_wing_span_fractions(rng, count):
+    if count != util.WING_SECTION_COUNT:
+        raise ValueError(f'wing section count must be {util.WING_SECTION_COUNT}, got {count}')
+    return [index / (count - 1) for index in range(count)]
+
+
+def _validate_wing_span_fractions(plan):
+    count = plan['section_count']
+    fractions = plan['span_fractions']
+    if not isinstance(fractions, list) or len(fractions) != count:
+        raise ValueError('wing span fractions must match the section count')
+    if fractions[0] != 0.0 or fractions[-1] != 1.0:
+        raise ValueError('wing span fractions must keep root and tip fixed')
+    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in fractions):
+        raise ValueError('wing span fractions must be finite')
+    if any(start >= end for start, end in zip(fractions[:-1], fractions[1:], strict=True)):
+        raise ValueError('wing span fractions must be strictly increasing')
 
 
 def evaluate_root_relative_quadratic(root_value, quadratic_a, quadratic_b, fraction):
     return root_value + quadratic_a * fraction**2 + quadratic_b * fraction
 
 
+def _wing_root_leading_edge_x(plan):
+    return plan['root_quarter_chord_x'] - 0.25 * plan['root_chord']
+
+
+def wing_root_z_bounds(fuselage_xsecs, plan):
+    """Return the local fuselage vertical bounds at the wing root leading edge."""
+    if len(fuselage_xsecs) < 2:
+        raise ValueError('fuselage_xsecs must contain at least two stations')
+    root_x = _wing_root_leading_edge_x(plan)
+    first_x = fuselage_xsecs[0]['x']
+    last_x = fuselage_xsecs[-1]['x']
+    if not first_x <= root_x <= last_x:
+        raise ValueError(
+            f'wing root leading-edge x={root_x} is outside fuselage range '
+            f'[{first_x}, {last_x}]'
+        )
+    for left, right in zip(fuselage_xsecs[:-1], fuselage_xsecs[1:], strict=True):
+        if not left['x'] < right['x']:
+            raise ValueError('fuselage_xsecs must have strictly increasing x stations')
+        if left['x'] <= root_x <= right['x']:
+            fraction = (root_x - left['x']) / (right['x'] - left['x'])
+            center_z = _interpolate_scalar(left['z'], right['z'], fraction)
+            height = _interpolate_scalar(left['height'], right['height'], fraction)
+            if height <= 0.0:
+                raise ValueError('interpolated fuselage height must be positive')
+            return center_z - 0.5 * height, center_z + 0.5 * height
+    raise RuntimeError('unable to locate wing root within fuselage station intervals')
+
+
+def sample_wing_root_leading_edge_z(rng, fuselage_xsecs, plan):
+    lower, upper = wing_root_z_bounds(fuselage_xsecs, plan)
+    plan['root_leading_edge_z'] = rng.uniform(lower, upper)
+
+
 def _build_wing_planform_sections(plan):
     count = plan["section_count"]
-    sections = []
+    _validate_wing_span_fractions(plan)
+    base_chords = []
+    base_leading_edge_x = []
     for index in range(count):
         fraction = index / (count - 1)
         chord = evaluate_root_relative_quadratic(
@@ -131,16 +248,35 @@ def _build_wing_planform_sections(plan):
             plan["quarter_chord_b"],
             fraction,
         )
+        base_chords.append(chord)
+        base_leading_edge_x.append(quarter_chord_x - 0.25 * chord)
+    sections = []
+    for index, span_fraction in enumerate(plan['span_fractions']):
+        fraction = index / (count - 1)
+        chord = base_chords[index] * plan['chord_jitter_factors'][index]
+        if index == 0:
+            leading_edge_x = base_leading_edge_x[0]
+        else:
+            previous_position = sections[-1]['leading_edge_xyz']
+            span_delta = span_fraction * plan['semi_span'] - previous_position[1]
+            base_sweep = math.atan2(
+                base_leading_edge_x[index] - base_leading_edge_x[index - 1], span_delta
+            )
+            leading_edge_x = previous_position[0] + span_delta * math.tan(
+                base_sweep * plan['sweep_jitter_factors'][index]
+            )
         sections.append({
             "leading_edge_xyz": [
-                quarter_chord_x - 0.25 * chord,
-                fraction * plan["semi_span"],
-                _interpolate_scalar(0.0, plan["tip_leading_edge_z"], fraction),
+                leading_edge_x,
+                span_fraction * plan["semi_span"],
+                _interpolate_scalar(
+                    plan['root_leading_edge_z'],
+                    plan['root_leading_edge_z'] + plan['tip_leading_edge_z_delta'],
+                    fraction,
+                ),
             ],
             "chord": chord,
-            "twist": _interpolate_scalar(
-                plan["root_twist"], plan["tip_twist"], fraction
-            ),
+            "twist": math.radians(plan['twist_degrees'][index]),
         })
     return sections
 
@@ -216,7 +352,9 @@ def _sample_quadratic_wing_plan(rng, fuselage_length, root_twist, tip_twist, sem
             "chord_vertex_fraction": chord_vertex_fraction,
             "root_twist": root_twist,
             "tip_twist": tip_twist,
-            "tip_leading_edge_z": rng.uniform(*WING_TIP_LEADING_EDGE_Z_RANGE),
+            # The final root height is sampled after all longitudinal placement.
+            "root_leading_edge_z": 0.0,
+            "tip_leading_edge_z_delta": rng.uniform(*WING_TIP_LEADING_EDGE_Z_DELTA_RANGE),
             "semi_span": semi_span,
         }
         if _has_valid_wing_planform(plan):
@@ -231,15 +369,26 @@ def build_random_reference(rng):
     fuselage_xsecs = sample_fuselage_xsecs(
         rng, fuselage_length, fuselage_width, fuselage_height
     )
-    root_twist = math.radians(rng.uniform(*WING_ROOT_TWIST_DEG_RANGE))
-    tip_twist = math.radians(rng.uniform(*WING_TIP_TWIST_DEG_RANGE))
+    root_twist = math.radians(rng.uniform(*WING_TWIST_DEG_RANGE))
+    tip_twist = math.radians(rng.uniform(*WING_TWIST_DEG_RANGE))
     wing_plan = _sample_quadratic_wing_plan(
         rng, fuselage_length, root_twist, tip_twist, MAX_WINGSPAN / 2.0
     )
-    wing_plan["section_count"] = _sample_section_count(rng)
+    wing_plan["section_count"] = util.WING_SECTION_COUNT
+    wing_plan['span_fractions'] = sample_wing_span_fractions(rng, wing_plan['section_count'])
+    wing_plan['twist_degrees'] = _sample_bounded_sequence(
+        rng, util.WING_SECTION_COUNT, WING_TWIST_DEG_RANGE,
+        WING_TWIST_MAX_ADJACENT_DELTA_DEG,
+    )
+    wing_plan['root_twist'] = math.radians(wing_plan['twist_degrees'][0])
+    wing_plan['tip_twist'] = math.radians(wing_plan['twist_degrees'][-1])
+    configure_wing_section_jitter(rng, wing_plan)
+    sample_wing_root_leading_edge_z(rng, fuselage_xsecs, wing_plan)
     return {
         "fuselage_xsecs": fuselage_xsecs,
-        "fuselage_sections": build_fuselage_sections(fuselage_xsecs),
+        "fuselage_latent": build_fuselage_latent(
+            fuselage_xsecs, fuselage_length, fuselage_width, fuselage_height
+        ),
         "wing_plan": wing_plan,
     }
 
@@ -292,6 +441,40 @@ def build_wing_sections(reference, wing_airfoil_sources, _rng):
     )}
 
 
+def build_wing_latent(sections):
+    validate_single_wing_sections(sections)
+    if len(sections) != util.WING_SECTION_COUNT:
+        raise ValueError(f'wing must use {util.WING_SECTION_COUNT} sections')
+    root = sections[0]
+    span = sections[-1]['leading_edge_xyz'][1] - root['leading_edge_xyz'][1]
+    if span <= 0.0:
+        raise ValueError('wing half span must be positive')
+    z_section = []
+    previous = None
+    for index, section in enumerate(sections):
+        position = section['leading_edge_xyz']
+        if previous is None:
+            dihedral = 0.0
+            sweep = 0.0
+        else:
+            delta_y = position[1] - previous['leading_edge_xyz'][1]
+            dihedral = math.degrees(math.atan2(position[2] - previous['leading_edge_xyz'][2], delta_y))
+            sweep = math.degrees(math.atan2(position[0] - previous['leading_edge_xyz'][0], delta_y))
+        z_section.append([
+            (position[1] - root['leading_edge_xyz'][1]) / span,
+            section['chord'] / root['chord'],
+            math.degrees(section['twist']),
+            dihedral,
+            sweep,
+        ])
+        previous = section
+    return {
+        'z_global': [*root['leading_edge_xyz'], root['chord'], span],
+        'z_section': z_section,
+        'airfoil_sources': [section['airfoil_source'] for section in sections],
+    }
+
+
 def build_obb_tree(_reference):
     assembler = TreeAssembler()
     assembler.push_box(FUSELAGE_COMPONENT_NAME)
@@ -317,19 +500,20 @@ def build_geometry_component(label, reference, wing_sections):
         else "fuselage"
     )
     if component == util.COMPONENT_WING:
+        latent = build_wing_latent(wing_sections[label])
         return {
             "name": label,
             "component": component,
             "sequence_type": sequence_type,
-            "sections": wing_sections[label],
+            **latent,
         }
-    sections = reference["fuselage_sections"]
-    validate_fuselage_sections(sections)
+    latent = reference['fuselage_latent']
+    validate_fuselage_latent(latent)
     return {
         "name": label,
         "component": component,
         "sequence_type": sequence_type,
-        "sections": sections,
+        **latent,
     }
 
 
@@ -415,9 +599,9 @@ def validate_geometry_payload(payload):
         if component_payload.get('sequence_type') != expected_sequence_type:
             raise ValueError(f"{label} has an unexpected sequence type")
         if component == util.COMPONENT_WING:
-            validate_single_wing_sections(component_payload["sections"])
+            validate_wing_latent(component_payload)
         else:
-            validate_fuselage_sections(component_payload.get("sections"))
+            validate_fuselage_latent(component_payload)
 
 
 def load_geometry_payload(path):
@@ -429,9 +613,8 @@ def load_geometry_payload(path):
 def validate_single_wing_sections(sections):
     if not isinstance(sections, list):
         raise TypeError("main_wing_right sections must be a list")
-    minimum, maximum = util.SECTION_COUNT_RANGE
-    if not minimum <= len(sections) <= maximum:
-        raise ValueError("main_wing_right has an invalid section count")
+    if len(sections) != util.WING_SECTION_COUNT:
+        raise ValueError(f'main_wing_right must contain {util.WING_SECTION_COUNT} sections')
     previous = None
     for index, section in enumerate(sections):
         for key in (
@@ -462,24 +645,117 @@ def validate_single_wing_sections(sections):
         previous = section
 
 
-def validate_fuselage_sections(sections):
-    if not isinstance(sections, list):
-        raise TypeError("fuselage sections must be a list")
-    minimum, maximum = util.SECTION_COUNT_RANGE
-    if not minimum <= len(sections) <= maximum:
-        raise ValueError("fuselage sections have an invalid count")
-    previous_x = None
-    for index, section in enumerate(sections):
+def validate_wing_latent(component_payload):
+    required = ('z_global', 'z_section', 'airfoil_sources')
+    for key in required:
+        if key not in component_payload:
+            raise KeyError(f'wing component missing {key}')
+    z_global = component_payload['z_global']
+    z_section = component_payload['z_section']
+    sources = component_payload['airfoil_sources']
+    if not isinstance(z_global, list) or len(z_global) != util.WING_GLOBAL_SIZE:
+        raise ValueError('wing z_global must be [x_LE, y_LE, z_LE, chord, span]')
+    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in z_global):
+        raise ValueError('wing z_global must contain finite values')
+    if z_global[3] <= 0.0 or z_global[4] <= 0.0:
+        raise ValueError('wing global chord and span must be positive')
+    if not isinstance(z_section, list) or len(z_section) != util.WING_SECTION_COUNT:
+        raise ValueError(f'wing z_section must contain {util.WING_SECTION_COUNT} sections')
+    if not isinstance(sources, list) or len(sources) != util.WING_SECTION_COUNT:
+        raise ValueError('wing airfoil_sources must match the fixed section count')
+    previous_span = None
+    previous_twist = None
+    for index, section in enumerate(z_section):
+        if not isinstance(section, list) or len(section) != util.WING_SECTION_GEOMETRY_SIZE:
+            raise ValueError(f'wing z_section[{index}] must contain five scalar geometry values')
+        if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in section):
+            raise ValueError(f'wing z_section[{index}] must contain finite values')
+        span_fraction, chord_fraction, twist, dihedral, sweep = section
+        if not 0.0 <= span_fraction <= 1.0 or not 0.0 < chord_fraction <= 1.0:
+            raise ValueError(f'wing z_section[{index}] has invalid normalized span or chord')
+        if not WING_TWIST_DEG_RANGE[0] <= twist <= WING_TWIST_DEG_RANGE[1]:
+            raise ValueError(f'wing z_section[{index}] twist is outside its configured range')
+        if previous_span is not None and span_fraction <= previous_span:
+            raise ValueError('wing z_section span fractions must be strictly increasing')
+        if previous_twist is not None and abs(twist - previous_twist) > WING_TWIST_MAX_ADJACENT_DELTA_DEG + 1e-9:
+            raise ValueError('wing adjacent twist change exceeds the configured maximum')
+        previous_span = span_fraction
+        previous_twist = twist
+        if not isinstance(sources[index], str) or not Path(sources[index]).is_file():
+            raise ValueError(f'wing airfoil_sources[{index}] is invalid')
+    if z_section[0][0] != 0.0 or z_section[0][1] != 1.0:
+        raise ValueError('wing root section must have normalized span/chord [0, 1]')
+    if z_section[0][3] != 0.0 or z_section[0][4] != 0.0:
+        raise ValueError('wing root sweep and dihedral must be zero')
+
+
+def wing_geometry_from_latent(component_payload):
+    validate_wing_latent(component_payload)
+    return wing_geometry_from_latent_fields(
+        component_payload['z_global'], component_payload['z_section']
+    )
+
+
+def wing_geometry_from_latent_fields(z_global, z_section):
+    x_le, y_le, z_le, root_chord, span = z_global
+    geometry = []
+    previous_fraction = 0.0
+    previous_position = [x_le, y_le, z_le]
+    for index, (span_fraction, chord_fraction, twist, dihedral, sweep) in enumerate(z_section):
+        if index == 0:
+            position = previous_position
+        else:
+            delta_y = (span_fraction - previous_fraction) * span
+            position = [
+                previous_position[0] + delta_y * math.tan(math.radians(sweep)),
+                previous_position[1] + delta_y,
+                previous_position[2] + delta_y * math.tan(math.radians(dihedral)),
+            ]
+        geometry.append({
+            'leading_edge_xyz': position,
+            'chord': root_chord * chord_fraction,
+            'twist': math.radians(twist),
+        })
+        previous_fraction = span_fraction
+        previous_position = position
+    return geometry
+
+
+def validate_fuselage_latent(component_payload):
+    required = ('z_global', 'z_section')
+    for key in required:
+        if key not in component_payload:
+            raise KeyError(f'fuselage component missing {key}')
+    z_global = component_payload['z_global']
+    z_section = component_payload['z_section']
+    if not isinstance(z_global, list) or len(z_global) != util.FUSELAGE_GLOBAL_SIZE:
+        raise ValueError('fuselage z_global must be [x_nose, y_center, z_center, length, width, height]')
+    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in z_global):
+        raise ValueError('fuselage z_global must contain finite values')
+    if any(value <= 0.0 for value in z_global[3:]):
+        raise ValueError('fuselage global length, width, and height must be positive')
+    if not isinstance(z_section, list) or len(z_section) != util.FUSELAGE_SECTION_COUNT:
+        raise ValueError(f'fuselage z_section must contain {util.FUSELAGE_SECTION_COUNT} sections')
+    previous = None
+    for index, section in enumerate(z_section):
         if not isinstance(section, list) or len(section) != util.FUSELAGE_SECTION_SIZE:
-            raise ValueError(f"fuselage.sections[{index}] must be a 5D list")
-        if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in section):
-            raise ValueError(f"fuselage.sections[{index}] has non-finite values")
-        x, _y, _z, width, height = section
-        if previous_x is not None and x <= previous_x:
-            raise ValueError("fuselage sections must be strictly ordered by +X")
-        if width <= 0.0 or height <= 0.0:
-            raise ValueError("fuselage sections must have positive width and height")
-        previous_x = x
+            raise ValueError(f'fuselage z_section[{index}] must be 6D')
+        if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in section):
+            raise ValueError(f'fuselage z_section[{index}] has non-finite values')
+        x_fraction, width_fraction, height_fraction, max_width_loc, super_m, super_n = section
+        if not math.isclose(x_fraction, index / (util.FUSELAGE_SECTION_COUNT - 1)):
+            raise ValueError('fuselage z_section x stations must be uniformly distributed')
+        if width_fraction <= 0.0 or height_fraction <= 0.0:
+            raise ValueError('fuselage normalized width and height must be positive')
+        for value_index, value, value_range, maximum_delta, name in (
+                (3, max_width_loc, FUSELAGE_SUPER_MAX_WIDTH_LOC_RANGE, FUSELAGE_SUPER_MAX_WIDTH_LOC_MAX_DELTA, 'Super_MaxWidthLoc'),
+                (4, super_m, FUSELAGE_SUPER_M_RANGE, FUSELAGE_SUPER_M_MAX_DELTA, 'Super_M'),
+                (5, super_n, FUSELAGE_SUPER_N_RANGE, FUSELAGE_SUPER_N_MAX_DELTA, 'Super_N')):
+            if not value_range[0] <= value <= value_range[1]:
+                raise ValueError(f'fuselage {name} is outside its configured range')
+            if previous is not None and abs(value - previous[value_index]) > maximum_delta + 1e-9:
+                raise ValueError(f'fuselage adjacent {name} change exceeds the configured maximum')
+        previous = section
 
 
 def validate_wing_sections(wing_sections):
@@ -495,6 +771,25 @@ def set_round_end_caps(vsp, geom_id, geometry_name):
     for parm_name in ROUND_CAP_PARM_NAMES:
         if vsp.GetParmVal(geom_id, parm_name, ROUND_CAP_GROUP) != vsp.ROUND_END_CAP:
             raise ValueError(f"OpenVSP did not apply round caps to {geometry_name}")
+
+
+def set_super_ellipse_fuselage_xsecs(vsp, fuselage_id, fuselage_xsecs):
+    xsec_surf = vsp.GetXSecSurf(fuselage_id, 0)
+    for index, xsec in enumerate(fuselage_xsecs):
+        curve_group = f'XSecCurve_{index}'
+        vsp.ChangeXSecShape(xsec_surf, index, vsp.XS_SUPER_ELLIPSE)
+        vsp.Update()
+        for parameter_name, _value_range, _maximum_delta in SUPER_ELLIPSE_PARAMETERS:
+            parameter_id = vsp.FindParm(fuselage_id, parameter_name, curve_group)
+            if not parameter_id:
+                raise RuntimeError(f'OpenVSP parameter is unavailable: {curve_group}/{parameter_name}')
+            parameter_value = xsec[parameter_name]
+            vsp.SetParmVal(parameter_id, parameter_value)
+            if not math.isclose(vsp.GetParmVal(parameter_id), parameter_value):
+                raise RuntimeError(f'OpenVSP parameter was not applied: {curve_group}/{parameter_name}')
+    for index in range(len(fuselage_xsecs)):
+        vsp.ResetXSecSkinParms(vsp.GetXSec(xsec_surf, index))
+    vsp.Update()
 
 
 def set_wing_xsec_file_airfoil(vsp, geom_id, xsec_index, airfoil_path):
@@ -569,6 +864,7 @@ def create_openvsp_aircraft(reference, wing_sections, output_path):
         reference["fuselage_xsecs"],
         TESS_INT,
     )
+    set_super_ellipse_fuselage_xsecs(infra.vsp, fuselage_id, reference['fuselage_xsecs'])
     set_round_end_caps(infra.vsp, fuselage_id, "fuselage")
     create_wing_with_section_airfoils(infra, "main_wing_right", wing_sections["main_wing_right"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -625,14 +921,19 @@ def _create_fuselage_with_correct_xsec_insertion(infra, pos, xsec_list, tess_int
         sec_index = f"XSec_{i}"
         curve_index = f"XSecCurve_{i}"
         x_percent = (station["x"] - xsec_list[0]["x"]) / length
+        z_percent = station['z'] / length
         if i > 0:
             vsp.SetParmVal(fuse_id, "SectTess_U", sec_index, section_tess_u[i - 1])
         vsp.SetParmVal(fuse_id, "XLocPercent", sec_index, x_percent)
+        z_location_id = vsp.FindParm(fuse_id, 'ZLocPercent', sec_index)
+        if not z_location_id:
+            raise ValueError(f'OpenVSP fuselage z location parameter is unavailable: {sec_index}')
+        vsp.SetParmVal(z_location_id, z_percent)
         if station["width"] > 0:
-            vsp.ChangeXSecShape(xsec_surf, i, vsp.XS_ELLIPSE)
+            vsp.ChangeXSecShape(xsec_surf, i, vsp.XS_SUPER_ELLIPSE)
             vsp.Update()
-            vsp.SetParmVal(fuse_id, "Ellipse_Width", curve_index, station["width"])
-            vsp.SetParmVal(fuse_id, "Ellipse_Height", curve_index, station["height"])
+            vsp.SetParmVal(fuse_id, "Super_Width", curve_index, station["width"])
+            vsp.SetParmVal(fuse_id, "Super_Height", curve_index, station["height"])
         vsp.Update()
     for i in range(len(xsec_list)):
         vsp.ResetXSecSkinParms(vsp.GetXSec(xsec_surf, i))

@@ -14,7 +14,6 @@ REPO_ROOT = DATA_DIR.parent
 DEFAULT_PLANFORM_COUNT = 30
 DEFAULT_ROOT_SEED = 20260727
 DEFAULT_OUTPUT_PATH = DATA_DIR / "quadratic_wing_planforms.png"
-NON_GUI_BACKENDS = {"agg", "pdf", "ps", "svg", "template"}
 
 for import_path in (REPO_ROOT, DATA_DIR):
     if str(import_path) not in sys.path:
@@ -104,8 +103,9 @@ def draw_planform(axis, plan):
     axis.set_xlabel("X (m)")
     axis.set_ylabel("Y (m)")
     axis.set_title(
-        "sections={}  ax={:.3f}, bx={:.3f}\nac={:.3f}, eta_c={:.3f}".format(
+        "sections={}  chord/sweep jitter=+/-{:.0%}\nax={:.3f}, bx={:.3f}, ac={:.3f}, eta_c={:.3f}".format(
             plan["section_count"],
+            common.WING_CHORD_JITTER_FRACTION,
             plan["quarter_chord_a"],
             plan["quarter_chord_b"],
             plan["chord_a"],
@@ -113,15 +113,6 @@ def draw_planform(axis, plan):
         ),
         fontsize=8,
     )
-
-
-def assert_interactive_backend(matplotlib):
-    backend = matplotlib.get_backend()
-    backend_key = backend.lower()
-    if backend_key in NON_GUI_BACKENDS or "backend_inline" in backend_key:
-        raise RuntimeError(
-            f"Matplotlib backend {backend!r} cannot show an interactive planform window"
-        )
 
 
 def main():
@@ -135,7 +126,6 @@ def main():
 
     import matplotlib.pyplot as plt
 
-    assert_interactive_backend(matplotlib)
     print("Matplotlib backend:", matplotlib.get_backend(), flush=True)
     print(f"Generating {args.count} quadratic wing planforms...", flush=True)
     columns = math.ceil(math.sqrt(args.count))
@@ -153,8 +143,6 @@ def main():
     figure.tight_layout()
     figure.savefig(args.output, dpi=180)
     print(f"Wrote planform visualization: {args.output}", flush=True)
-    print("Close the planform window to continue.", flush=True)
-    plt.show()
 
 
 if __name__ == "__main__":

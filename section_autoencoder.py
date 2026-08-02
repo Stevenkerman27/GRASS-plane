@@ -10,9 +10,10 @@ from torch.utils.data import Dataset
 import grassdata
 import grassmodel
 import section_parameter_codec
+import util
 
 
-SECTION_AUTOENCODER_CHECKPOINT_SCHEMA = 'grass_section_autoencoder_v2'
+SECTION_AUTOENCODER_CHECKPOINT_SCHEMA = 'grass_section_autoencoder_v4'
 
 
 def final_checkpoint_path(checkpoint_dir, sequence_type):
@@ -33,8 +34,8 @@ class SectionLeafDataset(Dataset):
     def __getitem__(self, index):
         box = self.leaves[index]
         return {
+            'z_global': box['z_global'].squeeze(0),
             'sections': box['sections'].squeeze(0),
-            'section_count': box['section_count'].reshape(()),
         }
 
     def __len__(self):
@@ -72,33 +73,29 @@ class SectionAutoencoder(nn.Module):
         self.section_encoder = grassmodel.SectionEncoder(
             sequence_type,
             config.feature_size,
-            config.ae_rnn_type,
             parameter_statistics,
         )
-        self.section_decoder = grassmodel.AutoregressiveSectionDecoder(
+        self.section_decoder = grassmodel.SectionDecoder(
             sequence_type,
             config.feature_size,
-            config.ae_rnn_type,
             parameter_statistics,
         )
 
-    def forward(self, sections, section_count, teacher_forcing_probability):
-        feature = self.section_encoder(sections, section_count)
-        return self.section_decoder(
-            feature, sections, section_count, teacher_forcing_probability
-        )
+    def forward(self, global_parameters, sections):
+        feature = self.section_encoder(global_parameters, sections)
+        return self.section_decoder(feature)
 
 
-def reconstruction_losses(model, sections, count_logits, target_sections, target_count):
+def reconstruction_losses(model, global_parameters, sections, target_global_parameters, target_sections):
     sequence_type = model.sequence_type
     parameter_codec = model.section_decoder.parameter_codec
     if sequence_type == grassdata.SEQUENCE_TYPE_WING:
-        return grassmodel.wing_section_reconstruction_losses(
-            parameter_codec, sections, count_logits, target_sections, target_count
+        return grassmodel.fixed_wing_section_reconstruction_losses(
+            parameter_codec, global_parameters, sections, target_global_parameters, target_sections
         )
     if sequence_type == grassdata.SEQUENCE_TYPE_FUSELAGE:
-        return grassmodel.fuselage_section_reconstruction_losses(
-            parameter_codec, sections, count_logits, target_sections, target_count
+        return grassmodel.fixed_fuselage_section_reconstruction_losses(
+            parameter_codec, global_parameters, sections, target_global_parameters, target_sections
         )
     raise ValueError(f'Unsupported sequence type: {sequence_type}')
 
@@ -116,28 +113,22 @@ def build_checkpoint(model, epoch, optimizer, scheduler, validation_metrics, con
         'scheduler_state_dict': scheduler.state_dict(),
         'validation_metrics': validation_metrics,
         'feature_size': config.feature_size,
-        'hidden_size': config.hidden_size,
-        'ae_rnn_type': config.ae_rnn_type,
+        'section_hidden_size': util.SECTION_CODEC_HIDDEN_SIZE,
         'parameter_statistics': parameter_statistics,
-        'teacher_forcing_schedule': {
-            'p_final': config.ae_teacher_forcing_p_final,
-            'ramp_start_epoch': config.ae_teacher_forcing_ramp_start_epoch,
-            'ramp_end_epoch': config.ae_teacher_forcing_ramp_end_epoch,
-        },
     }
 
 
 def _statistics_match(first, second, sequence_type):
     section_parameter_codec.validate_section_parameter_statistics(first, sequence_type)
     section_parameter_codec.validate_section_parameter_statistics(second, sequence_type)
-    return (
-        torch.equal(torch.as_tensor(first['constant_mask']), torch.as_tensor(second['constant_mask']))
-        and torch.allclose(
-            torch.as_tensor(first['mean']), torch.as_tensor(second['mean']), atol=1e-7, rtol=0.0
-        )
-        and torch.allclose(
-            torch.as_tensor(first['std']), torch.as_tensor(second['std']), atol=1e-7, rtol=0.0
-        )
+    return all(
+        torch.equal(torch.as_tensor(first[f'{prefix}_constant_mask']),
+                    torch.as_tensor(second[f'{prefix}_constant_mask']))
+        and torch.allclose(torch.as_tensor(first[f'{prefix}_mean']),
+                           torch.as_tensor(second[f'{prefix}_mean']), atol=1e-7, rtol=0.0)
+        and torch.allclose(torch.as_tensor(first[f'{prefix}_std']),
+                           torch.as_tensor(second[f'{prefix}_std']), atol=1e-7, rtol=0.0)
+        for prefix in ('global', 'section')
     )
 
 
@@ -148,8 +139,7 @@ def _validate_checkpoint(
         'sequence_type': sequence_type,
         'section_size': grassdata.sequence_section_size(sequence_type),
         'feature_size': config.feature_size,
-        'hidden_size': config.hidden_size,
-        'ae_rnn_type': config.ae_rnn_type,
+        'section_hidden_size': util.SECTION_CODEC_HIDDEN_SIZE,
     }
     for key, expected_value in expected.items():
         actual_value = checkpoint[key]
@@ -221,14 +211,12 @@ def load_section_autoencoder(checkpoint_path, sequence_type, device):
     if not path.is_file():
         raise FileNotFoundError(f'Section-AE checkpoint does not exist: {path}')
     checkpoint = torch.load(path, map_location='cpu', weights_only=True)
-    required_keys = ('feature_size', 'hidden_size', 'ae_rnn_type', 'parameter_statistics')
+    required_keys = ('feature_size', 'section_hidden_size', 'parameter_statistics')
     missing = [key for key in required_keys if key not in checkpoint]
     if missing:
         raise KeyError(f'{path} is missing required checkpoint keys: {missing}')
     config = SimpleNamespace(
         feature_size=checkpoint['feature_size'],
-        hidden_size=checkpoint['hidden_size'],
-        ae_rnn_type=checkpoint['ae_rnn_type'],
     )
     _validate_checkpoint(checkpoint, str(path), sequence_type, config)
     model = SectionAutoencoder(
